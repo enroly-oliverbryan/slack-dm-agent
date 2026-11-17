@@ -35,7 +35,7 @@ It is a first responder for teammates (mostly "how does X in your PR work?"). It
             └──────┬───────┘
                    ▼
             ┌──────────────┐   read-only tools:
-            │  responder   │── - T3 threads (t3-code MCP: thread_search/read)
+            │  responder   │── - T3 threads (t3-code MCP: thread search/read/list)
             │ (Agent SDK)  │── - Claude Code transcripts (~/.claude/projects/**/*.jsonl)
             └──────┬───────┘── - Jira + Confluence (Atlassian MCP)
                    │           - GitHub PRs (gh, read-only)
@@ -107,13 +107,19 @@ is an option behind a config flag if answers are weak, at the cost of latency. H
 Uses the Agent SDK so it can reuse existing MCP servers and get a proper tool loop. Tools are an explicit
 read-only allowlist; everything else is denied.
 
-| Source               | How                                                                   | Notes                                                              |
-| -------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| T3 Code threads      | `t3-code` MCP: `t3_thread_search`, `t3_thread_read`, `t3_thread_list` | Primary source for "what is the user working on"                   |
-| Claude Code sessions | `Grep`/`Read` scoped to `~/.claude/projects/**`                       | Fallback / older sessions. JSONL is large: grep first, read slices |
-| Jira / Confluence    | Atlassian MCP (read tools only)                                       | Ticket context, specs, RFCs                                        |
-| GitHub               | `gh pr view/diff/list` via a wrapped read-only tool                   | The PRs the questions are actually about                           |
-| Slack                | DM history with the sender (last ~50 msgs)                            | Pre-loaded into the prompt, not a tool                             |
+| Source               | How                                                                                           | Notes                                                              |
+| -------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| T3 Code threads      | `t3-code` MCP (user scope, see below): `t3_thread_search`, `t3_thread_read`, `t3_thread_list` | Primary source for "what is the user working on"                   |
+| Claude Code sessions | `Grep`/`Read` scoped to `~/.claude/projects/**`                                               | Fallback / older sessions. JSONL is large: grep first, read slices |
+| Jira / Confluence    | Atlassian MCP (read tools only)                                                               | Ticket context, specs, RFCs                                        |
+| GitHub               | `gh pr view/diff/list` via a wrapped read-only tool                                           | The PRs the questions are actually about                           |
+| Slack                | DM history with the sender (last ~50 msgs)                                                    | Pre-loaded into the prompt, not a tool                             |
+
+The `t3-code` MCP is registered with Claude Code at user scope, using the MCP URL from T3's "Use T3 Code in another
+app (MCP)" dialog (`claude mcp add --transport http --scope user t3-code <url>`), then logged in through `/mcp`. The
+responder loads it with `settingSources: ["user"]` and reuses that login. It connects a few seconds after session
+start, so check `query.mcpServerStatus()` before relying on it; `needs-auth` means the login expired (T3 issues no
+refresh token), so carry on without T3 context and notify the user to re-approve.
 
 Prompt shape:
 
@@ -194,8 +200,9 @@ notification. So always notify locally:
    replies, agent marker, shadow mode, and cooldowns.
 4. **Prompt injection from teammates** (deliberate or pasted content). Read-only tools + guard limit the
    blast radius to "says something it shouldn't".
-   Session access is limited to the project globs in config. T3 thread reads are filtered to threads whose
-   project path matches the same set.
+   Session access is limited to the project globs in config. The t3-code MCP exposes ~68 tools, including ones that
+   start, message and delete threads and projects, so the responder allowlists only the three read tools by full name,
+   and a `canUseTool` hook rejects reads of threads whose project path is outside the globs.
 5. **Read-state behaviour.** Confirm whether posting via API with a user token clears the user's unread badge.
    The notification is needed either way, but this decides how loud it should be.
 6. **Mac asleep / offline.** Messages arriving while the daemon is down: on startup, check DMs from
