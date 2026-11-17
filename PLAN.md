@@ -242,8 +242,9 @@ Planned: `enabled`, per-person `scope`
 
 `.env` (gitignored; `.env.example` is committed):
 
-- `USER_NAME` (required): the user's name as teammates know them. Every prompt refers to the user by this name and
-  as "they", so nothing in the code is tied to one person.
+- `USER_NAME` (required): the user's name as teammates know them. Every prompt refers to the user by this name, so
+  nothing in the code is tied to one person.
+- `PRONOUNS` (optional, default `they/them`): how prompts tell the model to refer to the user, e.g. `she/her`.
 - `SLACK_USER_TOKEN`, `SLACK_APP_TOKEN`: from the Slack app (see `slack-app-manifest.yaml`).
 
 Claude calls use the Claude Code login through the Agent SDK, so no `ANTHROPIC_API_KEY` is needed.

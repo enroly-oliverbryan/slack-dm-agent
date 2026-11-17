@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { USER_NAME } from "../src/env.ts";
+import { REFER_TO_USER, USER_NAME } from "../src/env.ts";
 import { generate as generateWith } from "../src/llm.ts";
 
 export { USER_NAME };
@@ -18,7 +18,7 @@ export const PROFILE_DIR = root("profile");
 export const MODEL = "claude-opus-5-5";
 
 // Who reads the profile. The agent borrows the user's tone; it never poses as them.
-// Prompts refer to the user by name and as "they", so nothing assumes pronouns.
+// Prompts refer to the user by name and with PRONOUNS (default they/them), so nothing assumes pronouns.
 export const AGENT_FRAMING = `The profile is read by ${USER_NAME}'s agent: an assistant that replies to teammates' Slack DMs while ${USER_NAME} is busy.
 The agent speaks as itself, not as ${USER_NAME}:
 - "I" is the agent. ${USER_NAME} is "${USER_NAME}", in the third person.
@@ -26,7 +26,7 @@ The agent speaks as itself, not as ${USER_NAME}:
 - It never claims to be ${USER_NAME}, and never states ${USER_NAME}'s opinions, decisions or commitments as its own.
 - It can only answer from information it has found. Anything that needs ${USER_NAME} (looking into something, deciding, agreeing to work) is handed back: "${USER_NAME} will get back to you".
 ${USER_NAME}'s own messages below are first-person. Treat them as evidence of their tone, not as lines the agent can say verbatim.
-Refer to ${USER_NAME} by name, or as "they" if a pronoun is needed.`;
+${REFER_TO_USER}`;
 const MAX_CHARS_PER_MESSAGE = 600; // long pastes (logs, code) say little about voice
 
 export type SentMessage = {

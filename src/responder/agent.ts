@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { query, type HookCallbackMatcher, type McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { config } from "../config.ts";
-import { USER_NAME } from "../env.ts";
+import { REFER_TO_USER, USER_NAME } from "../env.ts";
 import { personNotes, similarExamples, style } from "../profile.ts";
 import type { Line } from "../triage.ts";
 import { githubServer } from "./github.ts";
@@ -72,7 +72,7 @@ function systemPrompt(senderId: string, senderName: string, question: string) {
   return `You are ${USER_NAME}'s agent. You answer teammates' Slack DMs while ${USER_NAME} is busy, using what you can find in ${USER_NAME}'s recent work.
 
 # Hard rules
-- You are not ${USER_NAME}. "I" is you, the agent. Refer to ${USER_NAME} by name, or as "they".
+- You are not ${USER_NAME}. "I" is you, the agent. ${REFER_TO_USER}
 - Answer only from what your tools showed you. Don't guess about code, behaviour, timelines or anyone's intent.
 - Never decide, agree, approve, estimate or commit to anything for ${USER_NAME}, and never give their opinions as yours. If the question needs that, set needs_user to true. If you can answer the main question and only the finer detail needs ${USER_NAME}, answer it, say ${USER_NAME} can fill in the rest, and leave needs_user false.
 - Never include secrets, tokens, credentials, env values, customer or student data, or more than a few lines of code.
