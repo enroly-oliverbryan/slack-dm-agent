@@ -37,6 +37,27 @@ console.log(
   `Debounce ${debounceSeconds}s, recent reply window ${recentReplySeconds}s, skip when active: ${skipWhenActive}`,
 );
 
+// messages you send to yourself starting with "T:" play the part of a teammate, so the whole flow can be tested
+// without bothering anyone. Your other messages in the self-DM count as your replies.
+const TEST_PREFIX = /^T:\s*/;
+const TEST_SENDER = "test";
+allowlist.set(TEST_SENDER, "Test (you)");
+
+async function findSelfDm(): Promise<string | undefined> {
+  let cursor: string | undefined;
+  do {
+    const page = await web.conversations.list({ types: "im", limit: 1000, cursor });
+    const self = page.channels?.find((c) => c.user === selfId);
+    if (self?.id) return self.id;
+    cursor = page.response_metadata?.next_cursor || undefined;
+  } while (cursor);
+  return undefined;
+}
+
+const selfDm = await findSelfDm();
+if (selfDm) console.log(`Test mode: send "T: <message>" to yourself in Slack (${selfDm}).`);
+else console.warn("No self-DM found, test messages are off. Open your own DM in Slack once and restart.");
+
 const seen = new Set<string>();
 
 function notify(title: string, body: string) {
@@ -87,8 +108,19 @@ socket.on("message", async ({ event, ack }) => {
   if (seen.has(key)) return;
   seen.add(key);
 
+  if (event.user === selfId && event.channel === selfDm && TEST_PREFIX.test(event.text ?? "")) {
+    const text = (event.text ?? "").replace(TEST_PREFIX, "");
+    const result = bursts.add(event.channel, TEST_SENDER, { ts: event.ts, text });
+    console.log(
+      `[${event.channel}] test: ${text}${result === "user-here" ? "  (you replied recently, leaving it)" : ""}`,
+    );
+    return;
+  }
+
   if (event.user === selfId) {
     const cancelled = bursts.selfPosted(event.channel, event.ts);
+    const hint = event.channel === selfDm ? '  (counts as your reply; start with "T:" to send a test message)' : "";
+    console.log(`[${event.channel}] you: ${event.text}${hint}`);
     if (cancelled)
       console.log(`[${event.channel}] you replied, dropped ${cancelled.messages.length} pending message(s)`);
     return;
