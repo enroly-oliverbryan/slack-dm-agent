@@ -14,7 +14,8 @@
     "recon:collect": "tsx --env-file=.env recon/collect.ts",
     "recon:build": "tsx --env-file=.env recon/build-profile.ts",
     "recon": "pnpm recon:collect && pnpm recon:build && pnpm recon:people",
-    "recon:people": "tsx --env-file=.env recon/build-people.ts"
+    "recon:people": "tsx --env-file=.env recon/build-people.ts",
+    "test": "tsx --test 'src/**/*.test.ts'"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.325",
