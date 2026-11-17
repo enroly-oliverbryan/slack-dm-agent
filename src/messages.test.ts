@@ -13,6 +13,11 @@ describe("agent messages", () => {
     assert.equal(text, `${AGENT_HEADER}: it's in bursts.ts`);
   });
 
+  it("name the teammate in the header when the reply goes to the user's self-DM", () => {
+    const { text } = agentReply("hi", "Ana");
+    assert.equal(text, `${AGENT_HEADER} · reply to Ana: hi`);
+  });
+
   it("split replies longer than a section allows", () => {
     assert.equal(agentReply("x".repeat(6500)).blocks.length, 4);
   });

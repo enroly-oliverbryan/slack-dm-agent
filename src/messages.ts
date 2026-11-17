@@ -25,7 +25,9 @@ const sections = (text: string): KnownBlock[] => {
   return blocks;
 };
 
-// what a teammate sees. `text` is the plain fallback used in notifications.
-export function agentReply(reply: string): { text: string; blocks: KnownBlock[] } {
-  return { text: `${AGENT_HEADER}: ${reply}`, blocks: [small(AGENT_HEADER), ...sections(reply)] };
+// what a teammate sees. `text` is the plain fallback used in notifications. With `forName`, the header says who the
+// reply was for: used when a reply goes to the user's self-DM instead of the teammate.
+export function agentReply(reply: string, forName?: string): { text: string; blocks: KnownBlock[] } {
+  const header = forName ? `${AGENT_HEADER} · reply to ${forName}` : AGENT_HEADER;
+  return { text: `${header}: ${reply}`, blocks: [small(header), ...sections(reply)] };
 }
