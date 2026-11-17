@@ -182,8 +182,9 @@ notification. So always notify locally:
   when it's most useful, but also when wrong answers sit uncorrected longest).
 - **Feedback loop**: the user reacts to an agent message (👍 / 👎) or edits it. 👎 / edits get stored with the
   correction and fed back as examples in the next recon run.
-- **Audit log**: SQLite at `data/agent.db` - every inbound message, triage result, tool calls, draft, guard
-  verdict, sent text, latency. Lets the user see why it said something.
+- **Audit log** (built, `src/audit.ts`): one row per burst in `data/agent.db` (`bursts` table) with the messages,
+  triage result, draft, confidence, reasoning, sources, tool calls, hold-back reason, what was sent where, errors,
+  cost and duration. `pnpm audit-log` lists recent bursts; `pnpm audit-log <id>` shows one in full.
 - **Daily digest**: end-of-day summary of what it answered and what's still waiting on the user.
 - **Follow-up tracker**: deferred items stay "open" until the user replies in that DM; nudge them if one has been
   open > 2h.
@@ -224,6 +225,7 @@ notification. So always notify locally:
   "recent_reply_seconds": 300,
   "skip_when_active": false,
   "confidence_threshold": 0.7,
+  "send_to_teammates": false,
   "sources": {
     "project_roots": ["~/work/my-repo", "~/work/my-repo-*"],
     "github_repos": ["my-org/my-repo"],
@@ -232,6 +234,11 @@ notification. So always notify locally:
   }
 }
 ```
+
+`send_to_teammates` (default `false`, overridable per allowlist entry) decides where replies go. When off, a
+confident answer to a teammate is posted to the user's self-DM with "· reply to <name>" in the header, and holding
+replies are skipped; nothing reaches the teammate. Test (`T:`) messages always get their reply in the self-DM, holding
+replies included.
 
 `project_roots` is the single access boundary: the responder may read code under these folders, their Claude Code
 session logs (`~/.claude/projects/<encoded root>`), and T3 threads in projects whose workspace root matches. Models
@@ -289,5 +296,5 @@ config.example.yaml
 2. **Recon**: collect messages, generate `style.md` + examples, eyeball them.
 3. **Watcher + notify**: allowlist, debounce, dedupe, macOS notification. No LLM yet.
 4. **Triage + responder**: replies go straight to the teammate when confident, otherwise a holding reply.
-5. **Guard + feedback loop**: secret scan and confidence gate (done), length cap, audit log, reaction-based feedback.
+5. **Guard + feedback loop**: secret scan, confidence gate and audit log (done), length cap, reaction-based feedback.
 6. **Nice-to-haves**: digest, follow-up tracker, menu-bar toggle.

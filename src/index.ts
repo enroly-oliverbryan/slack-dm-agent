@@ -9,6 +9,7 @@ import { respond, type Draft } from "./responder/agent.ts";
 import { holdingReply } from "./profile.ts";
 import { agentReply, isAgentMessage } from "./messages.ts";
 import { findSecret } from "./guard.ts";
+import { recordBurst, type AuditRecord } from "./audit.ts";
 
 const { allowlist, debounceSeconds, recentReplySeconds, skipWhenActive } = config;
 
@@ -94,17 +95,39 @@ async function userIsActive(): Promise<boolean> {
 }
 
 async function handleBurst(burst: Burst) {
-  const name = allowlist.get(burst.user) ?? burst.user;
-  const count = burst.messages.length;
+  const started = Date.now();
+  const audit: AuditRecord = {
+    at: new Date().toISOString(),
+    channel: burst.channel,
+    senderId: burst.user,
+    senderName: allowlist.get(burst.user) ?? burst.user,
+    test: burst.channel === selfDm,
+    messages: burst.messages.map((m) => m.text),
+    costUsd: 0,
+  };
+  try {
+    await processBurst(burst, audit);
+  } catch (error) {
+    audit.error ??= (error as Error).message;
+    throw error;
+  } finally {
+    audit.durationMs = Date.now() - started;
+    const id = recordBurst(audit);
+    if (id) console.log(`[${burst.channel}] logged as #${id} (pnpm audit-log ${id})`);
+  }
+}
+
+async function processBurst(burst: Burst, audit: AuditRecord) {
+  const name = audit.senderName;
+  const messages = audit.messages;
+  const text = messages.join("\n");
 
   if (skipWhenActive && (await userIsActive())) {
-    console.log(`[${burst.channel}] skipped ${count} message(s) from ${name}: you're active`);
+    console.log(`[${burst.channel}] skipped ${messages.length} message(s) from ${name}: you're active`);
+    audit.outcome = "skipped-active";
     return;
   }
-
-  const messages = burst.messages.map((m) => m.text);
-  const text = messages.join("\n");
-  console.log(`[${burst.channel}] burst from ${name} (${count} message(s)) ready:\n${text}`);
+  console.log(`[${burst.channel}] burst from ${name} (${messages.length} message(s)) ready:\n${text}`);
 
   const history = await recentHistory(burst);
   let result;
@@ -114,8 +137,18 @@ async function handleBurst(burst: Burst) {
     // never lose a message to a triage failure: tell the user and stop there.
     console.error("triage failed:", error);
     notify(`DM from ${name} (triage failed)`, text);
+    Object.assign(audit, { outcome: "triage-failed", error: (error as Error).message });
     return;
   }
+  Object.assign(audit, {
+    triageAction: result.action,
+    triageUrgent: result.urgent,
+    triageReason: result.reason,
+    topics: result.topics,
+    prs: result.prs,
+    jiraKeys: result.jiraKeys,
+    costUsd: result.costUsd,
+  });
 
   const refs = [...result.prs.map((n) => `#${n}`), ...result.jiraKeys];
   console.log(
@@ -125,12 +158,16 @@ async function handleBurst(burst: Burst) {
       `\n  cost: $${result.costUsd.toFixed(4)}`,
   );
 
-  if (result.action === "ignore" && !result.urgent) return;
+  if (result.action === "ignore" && !result.urgent) {
+    audit.outcome = "ignored";
+    return;
+  }
 
   // requests, decisions, incidents and personal messages are for the user to answer: the agent stays quiet.
   if (result.action !== "answer") {
     console.log(`[${burst.channel}] left for you, no reply sent`);
     notify(`${name} needs you${result.urgent ? " (URGENT)" : ""}`, text, true);
+    audit.outcome = "deferred";
     return;
   }
 
@@ -148,10 +185,21 @@ async function handleBurst(burst: Burst) {
     });
   } catch (error) {
     console.error("responder failed:", error);
-    await reply(burst.channel, holdingReply());
+    Object.assign(audit, { outcome: "responder-failed", error: (error as Error).message });
+    await send(audit, burst, holdingReply(), { holding: true });
     notify(`${name} needs you (responder failed)`, text, true);
     return;
   }
+  Object.assign(audit, {
+    draft: draft.reply,
+    confidence: draft.confidence,
+    needsUser: draft.needsUser,
+    sources: draft.sources,
+    reasoning: draft.reasoning,
+    toolCalls: draft.toolCalls,
+    t3Problem: draft.t3Problem,
+    costUsd: audit.costUsd + draft.costUsd,
+  });
 
   const secret = findSecret(draft.reply);
   const holdBack = draft.needsUser
@@ -172,21 +220,46 @@ async function handleBurst(burst: Burst) {
 
   if (holdBack) {
     console.log(`[${burst.channel}] sending a holding reply instead: ${holdBack}`);
-    await reply(burst.channel, holdingReply());
+    Object.assign(audit, { outcome: "held-back", holdReason: holdBack });
+    await send(audit, burst, holdingReply(), { holding: true });
     notify(`${name} needs you (${holdBack})`, text, true);
     return;
   }
-  await reply(burst.channel, draft.reply);
-  notify(`Replied to ${name}`, draft.reply);
+  audit.outcome = "answered";
+  const sent = await send(audit, burst, draft.reply);
+  notify(sent === "teammate" ? `Replied to ${name}` : `Drafted a reply to ${name}`, draft.reply);
 }
 
-// posts into the DM the burst came from, from the user's account, marked as the agent.
-async function reply(channel: string, text: string) {
+// reply() plus the audit record of what went where.
+async function send(audit: AuditRecord, burst: Burst, text: string, options?: { holding?: boolean }) {
+  const sentTo = await reply(burst, audit.senderName, text, options);
+  audit.sentTo = sentTo;
+  if (sentTo !== "skipped") audit.sentText = text;
+  return sentTo;
+}
+
+// replies in the DM the burst came from when it's a test message or sending to this teammate is on. Otherwise the
+// reply goes to the user's self-DM, naming the teammate, and holding replies are skipped.
+async function reply(
+  burst: Burst,
+  name: string,
+  text: string,
+  { holding = false } = {},
+): Promise<"teammate" | "self-dm" | "skipped"> {
+  const direct = burst.channel === selfDm || config.sendsTo(burst.user);
+  if (!direct && (holding || !selfDm)) {
+    console.log(`[${burst.channel}] not sending to ${name}${holding ? " (holding reply)" : ""}`);
+    return "skipped";
+  }
+  const channel = direct ? burst.channel : selfDm!;
   try {
-    await web.chat.postMessage({ channel, ...agentReply(text), unfurl_links: false });
+    await web.chat.postMessage({ channel, ...agentReply(text, direct ? undefined : name), unfurl_links: false });
+    console.log(`[${burst.channel}] sent to ${direct ? name : "your self-DM"}`);
+    return direct ? "teammate" : "self-dm";
   } catch (error) {
     console.error("sending the reply failed:", error);
     notify("Agent reply failed to send", text, true);
+    return "skipped";
   }
 }
 
