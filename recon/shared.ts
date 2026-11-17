@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { query } from "@anthropic-ai/claude-agent-sdk";
 import { USER_NAME } from "../src/env.ts";
+import { generate as generateWith } from "../src/llm.ts";
 
 export { USER_NAME };
 
@@ -64,27 +64,6 @@ export const formatPair = (p: DmPair) => `<pair id="${p.id}" with="${p.withName}
 <user>${clip(p.reply)}</user>
 </pair>`;
 
-// One-shot structured generation with Opus 5.5 on the Claude Code login (no API key needed).
-export async function generate<T>(opts: {
-  systemPrompt: string;
-  prompt: string;
-  schema: Record<string, unknown>;
-}): Promise<{ output: T; costUsd: number }> {
-  for await (const message of query({
-    prompt: opts.prompt,
-    options: {
-      model: MODEL,
-      effort: "high",
-      systemPrompt: opts.systemPrompt,
-      tools: [], // pure generation: no file, shell or web access
-      settingSources: [], // don't load CLAUDE.md or user settings into this run
-      persistSession: false,
-      outputFormat: { type: "json_schema", schema: opts.schema },
-    },
-  })) {
-    if (message.type !== "result") continue;
-    if (message.subtype !== "success") throw new Error(`generation failed: ${message.subtype}`);
-    return { output: message.structured_output as T, costUsd: message.total_cost_usd };
-  }
-  throw new Error("no result returned");
-}
+// recon runs once and is worth a careful model.
+export const generate = <T>(opts: { systemPrompt: string; prompt: string; schema: Record<string, unknown> }) =>
+  generateWith<T>({ ...opts, model: MODEL, effort: "high" });
