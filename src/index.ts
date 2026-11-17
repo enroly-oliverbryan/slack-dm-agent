@@ -2,12 +2,7 @@ import { readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { SocketModeClient } from "@slack/socket-mode";
 import { WebClient } from "@slack/web-api";
-
-function required(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`Missing ${name} in .env`);
-  return value;
-}
+import { required } from "./env.ts";
 
 const config: { allowlist: { id: string; name: string }[] } = JSON.parse(
   readFileSync(new URL("../config.json", import.meta.url), "utf8"),
