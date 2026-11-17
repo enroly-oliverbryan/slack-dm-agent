@@ -235,7 +235,7 @@ notification. So always notify locally:
 
 `project_roots` is the single access boundary: the responder may read code under these folders, their Claude Code
 session logs (`~/.claude/projects/<encoded root>`), and T3 threads in projects whose workspace root matches. Models
-are constants in code (triage Haiku 5.5, responder Sonnet 5.5, recon Opus 5.5) and the agent marker is fixed (the "From <name>'s agent" context line).
+are constants in code (triage Haiku 5.5, responder Sonnet 5.5, recon Opus 5.5) and every agent message carries the context-line marker (text from `CUSTOM_HEADER`, default "From <name>'s agent").
 
 Planned: `enabled`, per-person `scope`
 (`technical` | `all` | `defer-all`), `cooldown_minutes`, `working_hours`.
@@ -244,6 +244,8 @@ Planned: `enabled`, per-person `scope`
 
 - `USER_NAME` (required): the user's name as teammates know them. Every prompt refers to the user by this name, so
   nothing in the code is tied to one person.
+- `CUSTOM_HEADER` (optional, default "From <name>'s agent"): the marker line's text. It can be reworded, not removed,
+  and should still say the message is from an agent.
 - `PRONOUNS` (optional, default `they/them`): how prompts tell the model to refer to the user, e.g. `she/her`.
 - `SLACK_USER_TOKEN`, `SLACK_APP_TOKEN`: from the Slack app (see `slack-app-manifest.yaml`).
 

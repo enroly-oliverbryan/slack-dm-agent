@@ -12,3 +12,6 @@ export const PRONOUNS = process.env.PRONOUNS?.trim() || "they/them";
 
 // the one rule every prompt uses for how to refer to the user.
 export const REFER_TO_USER = `Refer to ${USER_NAME} by name, or with ${PRONOUNS} pronouns.`;
+
+// the small line above every agent message. Optional; it should still make clear the message is from an agent.
+export const AGENT_HEADER = process.env.CUSTOM_HEADER?.trim() || `From ${USER_NAME}'s agent`;

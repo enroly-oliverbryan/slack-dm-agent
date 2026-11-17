@@ -4,7 +4,7 @@
 // context block). Its block_id is how the watcher tells agent posts from the user's own messages.
 
 import type { KnownBlock } from "@slack/web-api";
-import { USER_NAME } from "./env.ts";
+import { AGENT_HEADER } from "./env.ts";
 
 const REPLY_ID = "dm-agent-reply";
 const SECTION_LIMIT = 3000; // Slack's cap on a section block's text
@@ -25,9 +25,7 @@ const sections = (text: string): KnownBlock[] => {
   return blocks;
 };
 
-const agentLine = `From ${USER_NAME}'s agent`;
-
 // what a teammate sees. `text` is the plain fallback used in notifications.
 export function agentReply(reply: string): { text: string; blocks: KnownBlock[] } {
-  return { text: `${agentLine}: ${reply}`, blocks: [small(agentLine), ...sections(reply)] };
+  return { text: `${AGENT_HEADER}: ${reply}`, blocks: [small(AGENT_HEADER), ...sections(reply)] };
 }
