@@ -1,33 +1,16 @@
-import { readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { SocketModeClient } from "@slack/socket-mode";
 import { WebClient } from "@slack/web-api";
-import { required } from "./env.ts";
+import { required, USER_NAME } from "./env.ts";
+import { config } from "./config.ts";
 import { BurstTracker, type Burst } from "./bursts.ts";
-import { USER_NAME } from "./env.ts";
 import { triage, type Line } from "./triage.ts";
+import { respond, type Draft } from "./responder/agent.ts";
+import { holdingReply } from "./profile.ts";
+import { agentReply, isAgentMessage } from "./messages.ts";
+import { findSecret } from "./guard.ts";
 
-type Config = {
-  allowlist: { id: string; name: string }[];
-  // quiet time after a teammate's last message before the burst is handled.
-  debounce_seconds?: number;
-  // a teammate message this soon after the user's own message in the DM is left to the user.
-  recent_reply_seconds?: number;
-  // skip bursts while the user's Slack presence is "active".
-  skip_when_active?: boolean;
-};
-
-const config: Config = JSON.parse(readFileSync(new URL("../config.json", import.meta.url), "utf8"));
-const badIds = config.allowlist.filter((user) => !user.id.startsWith("U") && !user.id.startsWith("W"));
-if (badIds.length) {
-  throw new Error(
-    `config.json allowlist needs user IDs (U...), not channel IDs: ${badIds.map((p) => p.id).join(", ")}`,
-  );
-}
-const allowlist = new Map(config.allowlist.map((p) => [p.id, p.name]));
-const debounceSeconds = config.debounce_seconds ?? 45;
-const recentReplySeconds = config.recent_reply_seconds ?? 300;
-const skipWhenActive = config.skip_when_active ?? false;
+const { allowlist, debounceSeconds, recentReplySeconds, skipWhenActive } = config;
 
 const web = new WebClient(required("SLACK_USER_TOKEN"));
 const socket = new SocketModeClient({ appToken: required("SLACK_APP_TOKEN") });
@@ -69,7 +52,7 @@ function notify(title: string, body: string, loud = false) {
   execFile("osascript", ["-e", `display notification "${esc(body)}" with title "${esc(title)}"${sound}`]);
 }
 
-const HISTORY_LINES = 10;
+const HISTORY_LINES = 20; // the responder gets all of these, triage the last 10
 
 // the messages before a burst, oldest first, so triage can tell "thanks" after an answer from a new question.
 async function recentHistory(burst: Burst): Promise<Line[]> {
@@ -87,6 +70,7 @@ async function recentHistory(burst: Burst): Promise<Line[]> {
       .map((m) => {
         const text = m.text ?? "";
         if (m.user !== selfId) return { from: sender, text };
+        if (isAgentMessage(m)) return { from: `${USER_NAME}'s agent`, text };
         // in the self-DM, "T:" lines are the test teammate's side of the conversation.
         if (burst.channel === selfDm && TEST_PREFIX.test(text))
           return { from: sender, text: text.replace(TEST_PREFIX, "") };
@@ -122,9 +106,10 @@ async function handleBurst(burst: Burst) {
   const text = messages.join("\n");
   console.log(`[${burst.channel}] burst from ${name} (${count} message(s)) ready:\n${text}`);
 
+  const history = await recentHistory(burst);
   let result;
   try {
-    result = await triage({ sender: name, history: await recentHistory(burst), messages });
+    result = await triage({ sender: name, history: history.slice(-10), messages });
   } catch (error) {
     // never lose a message to a triage failure: tell the user and stop there.
     console.error("triage failed:", error);
@@ -141,8 +126,68 @@ async function handleBurst(burst: Burst) {
   );
 
   if (result.action === "ignore" && !result.urgent) return;
-  notify(`DM from ${name}: ${result.urgent ? "URGENT, " : ""}${result.action}`, text, result.urgent);
-  // next: respond to "answer" bursts in shadow mode.
+
+  // requests, decisions, incidents and personal messages are for the user to answer: the agent stays quiet.
+  if (result.action !== "answer") {
+    console.log(`[${burst.channel}] left for you, no reply sent`);
+    notify(`${name} needs you${result.urgent ? " (URGENT)" : ""}`, text, true);
+    return;
+  }
+
+  console.log(`[${burst.channel}] researching a reply...`);
+  let draft: Draft;
+  try {
+    draft = await respond({
+      senderId: burst.user,
+      senderName: name,
+      messages,
+      history,
+      topics: result.topics,
+      prs: result.prs,
+      jiraKeys: result.jiraKeys,
+    });
+  } catch (error) {
+    console.error("responder failed:", error);
+    await reply(burst.channel, holdingReply());
+    notify(`${name} needs you (responder failed)`, text, true);
+    return;
+  }
+
+  const secret = findSecret(draft.reply);
+  const holdBack = draft.needsUser
+    ? "needs you"
+    : draft.confidence < config.confidenceThreshold
+      ? `confidence ${draft.confidence.toFixed(2)}`
+      : secret
+        ? `draft looked like it held a ${secret}`
+        : undefined;
+  console.log(
+    `[${burst.channel}] draft: confidence ${draft.confidence.toFixed(2)}${draft.needsUser ? ", needs you" : ""} · ` +
+      `${(draft.durationMs / 1000).toFixed(0)}s · $${draft.costUsd.toFixed(3)} · ${draft.toolCalls.join(", ") || "no tools"}` +
+      `\n  reasoning: ${draft.reasoning}` +
+      (draft.sources.length ? `\n  sources: ${draft.sources.join(", ")}` : "") +
+      (draft.t3Problem ? `\n  T3 unavailable (${draft.t3Problem}): re-approve t3-code via /mcp in Claude Code` : "") +
+      `\n${draft.reply}`,
+  );
+
+  if (holdBack) {
+    console.log(`[${burst.channel}] sending a holding reply instead: ${holdBack}`);
+    await reply(burst.channel, holdingReply());
+    notify(`${name} needs you (${holdBack})`, text, true);
+    return;
+  }
+  await reply(burst.channel, draft.reply);
+  notify(`Replied to ${name}`, draft.reply);
+}
+
+// posts into the DM the burst came from, from the user's account, marked as the agent.
+async function reply(channel: string, text: string) {
+  try {
+    await web.chat.postMessage({ channel, ...agentReply(text), unfurl_links: false });
+  } catch (error) {
+    console.error("sending the reply failed:", error);
+    notify("Agent reply failed to send", text, true);
+  }
 }
 
 const bursts = new BurstTracker({
@@ -160,6 +205,9 @@ socket.on("message", async ({ event, ack }) => {
   const key = `${event.channel}:${event.ts}`;
   if (seen.has(key)) return;
   seen.add(key);
+
+  // the agent's own posts come from the user's account; they aren't the user replying.
+  if (event.user === selfId && isAgentMessage(event)) return;
 
   if (event.user === selfId && event.channel === selfDm && TEST_PREFIX.test(event.text ?? "")) {
     const text = (event.text ?? "").replace(TEST_PREFIX, "");

@@ -17,6 +17,9 @@ importers:
       '@slack/web-api':
         specifier: ^8.4.0
         version: 8.4.0
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: ^24.0.0

@@ -1,6 +1,18 @@
 {
-  "allowlist": [{ "id": "U0123ABCDEF", "name": "Teammate name" }],
+  "allowlist": [
+    {
+      "id": "U0123ABCDEF",
+      "name": "Teammate name"
+    }
+  ],
   "debounce_seconds": 45,
   "recent_reply_seconds": 300,
-  "skip_when_active": false
+  "skip_when_active": false,
+  "confidence_threshold": 0.7,
+  "sources": {
+    "project_roots": ["~/work/my-repo", "~/work/my-repo-*"],
+    "github_repos": ["my-org/my-repo"],
+    "t3_mcp_url": "https://<your-relay>.t3coderelay.com/mcp",
+    "atlassian_mcp_url": "https://mcp.atlassian.com/v2/mcp"
+  }
 }
