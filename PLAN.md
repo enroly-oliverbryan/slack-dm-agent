@@ -95,7 +95,9 @@ Cheap, fast classification before spending on research. Output (structured):
 
 - `action`: `ignore` (e.g. "thanks!", emoji-only, "ok"), `answer`, or `defer`.
 - `defer` triggers directly for: requests for decisions/approvals/commitments, personal or sensitive topics,
-  anything about people/performance/HR, urgent incidents, "can you jump on a call".
+  anything about people/performance/HR, urgent incidents, "can you jump on a call". A deferred message gets no
+  reply at all, only a "needs you" notification: a holding reply adds nothing to a request aimed at the user.
+  Holding replies are for questions the responder tried and couldn't answer confidently.
 - `topics`: PR numbers, Jira keys, repo/feature names extracted from the message to seed research.
 
 ### 4. Responder (Claude Agent SDK, Sonnet 5.5)
@@ -107,13 +109,14 @@ is an option behind a config flag if answers are weak, at the cost of latency. H
 Uses the Agent SDK so it can reuse existing MCP servers and get a proper tool loop. Tools are an explicit
 read-only allowlist; everything else is denied.
 
-| Source               | How                                                                                           | Notes                                                              |
-| -------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| T3 Code threads      | `t3-code` MCP (user scope, see below): `t3_thread_search`, `t3_thread_read`, `t3_thread_list` | Primary source for "what is the user working on"                   |
-| Claude Code sessions | `Grep`/`Read` scoped to `~/.claude/projects/**`                                               | Fallback / older sessions. JSONL is large: grep first, read slices |
-| Jira / Confluence    | Atlassian MCP (read tools only)                                                               | Ticket context, specs, RFCs                                        |
-| GitHub               | `gh pr view/diff/list` via a wrapped read-only tool                                           | The PRs the questions are actually about                           |
-| Slack                | DM history with the sender (last ~50 msgs)                                                    | Pre-loaded into the prompt, not a tool                             |
+| Source               | How                                                                                                                     | Notes                                                              |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| T3 Code threads      | `t3-code` MCP (user scope, see below): `t3_thread_search`, `t3_thread_read`, `t3_thread_list`                           | Primary source for "what is the user working on"                   |
+| Claude Code sessions | `Grep`/`Read` scoped to the session folders of `project_roots`                                                          | Fallback / older sessions. JSONL is large: grep first, read slices |
+| Code                 | `Read`/`Grep`/`Glob` under `project_roots`, secret-looking files (`.env`, keys) denied                                  | Where things live and how they work                                |
+| Jira / Confluence    | `atlassian` MCP (user scope, `atlassian_mcp_url`), read tools only: issue, JQL search, comments, Confluence search/page | Ticket context, specs, RFCs                                        |
+| GitHub               | `gh pr view/diff/list` via a wrapped read-only tool                                                                     | The PRs the questions are actually about                           |
+| Slack                | DM history with the sender (last ~50 msgs)                                                                              | Pre-loaded into the prompt, not a tool                             |
 
 The `t3-code` MCP is registered with Claude Code at user scope, using the MCP URL from T3's "Use T3 Code in another
 app (MCP)" dialog (`claude mcp add --transport http --scope user t3-code <url>`), then logged in through `/mcp`. The
@@ -145,8 +148,8 @@ Budget: max ~20 tool calls, ~90s wall clock. On timeout -> defer.
 Deterministic checks before anything is sent:
 
 - `confidence < threshold` (default 0.7) -> replace with a holding reply.
-- Secret scan on the outgoing text (regexes for AWS keys, `xox*`, JWTs, `.env`-style `KEY=value`, private keys).
-  Any hit -> block and defer.
+- Secret scan on the outgoing text (`src/guard.ts`: AWS keys, `xox*`, GitHub and API keys, JWTs, private keys,
+  credentials in URLs, `KEY=value` secrets). Any hit -> holding reply.
 - Length cap and "no code block over N lines".
 - Holding replies are templated in the user's tone and rotated, e.g. "Not sure on this one - <name> will get back
   to you :slightly_smiling_face:" - generated once during recon, not freeform at runtime. No claims about where
@@ -156,7 +159,8 @@ Deterministic checks before anything is sent:
 
 - Post with `chat.postMessage` using the user token, in the same DM (or thread, if the question was threaded).
 - **Identity (not configurable)**: the message posts from the user's account, so every agent message carries a
-  marker in the text, e.g. a `🤖` prefix. The first agent reply in a conversation also says what it is ("Hi! I'm
+  marker: a small grey "From <name>'s agent" line above the reply (a Block Kit context block, whose `block_id`
+  also lets the watcher recognise its own posts). The first agent reply in a conversation also says what it is ("Hi! I'm
   the user's agent - ..."). Teammates must always be able to tell the agent from the user, so nobody acts on a wrong
   answer thinking the user said it.
 - Include sources when useful (PR link, Jira key) - also makes wrong answers easy to spot.
@@ -173,8 +177,6 @@ notification. So always notify locally:
 
 ## Other things worth building
 
-- **Shadow mode first**: v0 posts nothing to the teammate. It sends the would-be reply to the user (Slack self-DM
-  or notification) with ✅/❌. Run for a week or two, tune, then flip to live per person.
 - **Kill switch**: `config.enabled`, a menu-bar toggle or a `/agent off` message to self. Also auto-pause outside
   working hours or when the user's Slack status is set to holiday (configurable either way - holiday is arguably
   when it's most useful, but also when wrong answers sit uncorrected longest).
@@ -197,12 +199,14 @@ notification. So always notify locally:
    customer data, or private conversations. Mitigations: guard secret scan, a path allowlist for transcripts
    (`sources.claude_projects_globs` in config), and the "no large pastes" rule. Decide whether some projects are off-limits.
 3. **Wrong answers in the user's name.** The main reputational risk. Mitigated by confidence gate, sources in
-   replies, agent marker, shadow mode, and cooldowns.
+   replies, agent marker, the allowlist, and cooldowns. (A shadow mode that sent drafts to the user
+   first was built and dropped: the confidence gate decides instead.)
 4. **Prompt injection from teammates** (deliberate or pasted content). Read-only tools + guard limit the
    blast radius to "says something it shouldn't".
    Session access is limited to the project globs in config. The t3-code MCP exposes ~68 tools, including ones that
    start, message and delete threads and projects, so the responder allowlists only the three read tools by full name,
-   and a `canUseTool` hook rejects reads of threads whose project path is outside the globs.
+   and a `PreToolUse` hook only allows thread searches with the projectId of an allowed project, and reads of
+   threads those searches returned.
 5. **Read-state behaviour.** Confirm whether posting via API with a user token clears the user's unread badge.
    The notification is needed either way, but this decides how loud it should be.
 6. **Mac asleep / offline.** Messages arriving while the daemon is down: on startup, check DMs from
@@ -211,33 +215,30 @@ notification. So always notify locally:
 
 ## Config
 
-`config.yaml` (gitignored; a `config.example.yaml` is committed):
+`config.json` (gitignored; `config.example.json` is committed). Implemented so far:
 
-```yaml
-enabled: true
-mode: shadow # shadow | live
-allowlist:
-  - id: U0123ABC
-    name: Sam
-    mode: live # per-person override
-    scope: technical # technical | all | defer-all
-debounce_seconds: 45
-cooldown_minutes: 10
-confidence_threshold: 0.7
-working_hours: { start: "08:30", end: "18:30", tz: Europe/London, enforce: false }
-agent_marker: "🤖 " # always on; prefixed to every agent message
-models:
-  triage: claude-haiku-5-5
-  responder: claude-sonnet-5-5
-  recon: claude-opus-5-5
-sources:
-  # the only session transcripts the agent may read. Nothing outside these globs.
-  claude_projects_globs:
-    - ~/.claude/projects/*my-repo*/**/*.jsonl
-  t3: true
-  atlassian: true
-  github_repos: [my-org/my-repo]
+```json
+{
+  "allowlist": [{ "id": "U0123ABC", "name": "Sam" }],
+  "debounce_seconds": 45,
+  "recent_reply_seconds": 300,
+  "skip_when_active": false,
+  "confidence_threshold": 0.7,
+  "sources": {
+    "project_roots": ["~/work/my-repo", "~/work/my-repo-*"],
+    "github_repos": ["my-org/my-repo"],
+    "t3_mcp_url": "https://<relay>.t3coderelay.com/mcp",
+    "atlassian_mcp_url": "https://mcp.atlassian.com/v2/mcp"
+  }
+}
 ```
+
+`project_roots` is the single access boundary: the responder may read code under these folders, their Claude Code
+session logs (`~/.claude/projects/<encoded root>`), and T3 threads in projects whose workspace root matches. Models
+are constants in code (triage Haiku 5.5, responder Sonnet 5.5, recon Opus 5.5) and the agent marker is fixed (the "From <name>'s agent" context line).
+
+Planned: `enabled`, per-person `scope`
+(`technical` | `all` | `defer-all`), `cooldown_minutes`, `working_hours`.
 
 `.env` (gitignored; `.env.example` is committed):
 
@@ -284,7 +285,6 @@ config.example.yaml
    user-token post works. Answer open question 5.
 2. **Recon**: collect messages, generate `style.md` + examples, eyeball them.
 3. **Watcher + notify**: allowlist, debounce, dedupe, macOS notification. No LLM yet.
-4. **Triage + responder in shadow mode**: drafts go to the user only. Audit log.
-5. **Guard + feedback loop**: secret scan, confidence gate, reaction-based feedback.
-6. **Go live** for one teammate, then expand.
-7. **Nice-to-haves**: digest, follow-up tracker, menu-bar toggle.
+4. **Triage + responder**: replies go straight to the teammate when confident, otherwise a holding reply.
+5. **Guard + feedback loop**: secret scan and confidence gate (done), length cap, audit log, reaction-based feedback.
+6. **Nice-to-haves**: digest, follow-up tracker, menu-bar toggle.
