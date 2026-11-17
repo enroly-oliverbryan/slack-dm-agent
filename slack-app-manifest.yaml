@@ -1,13 +1,13 @@
 display_information:
-  name: Oliver Auto-Reply
-  description: Watches Oliver's DMs from an allowlist and drafts replies.
+  name: Slack DM Agent
+  description: Watches your DMs from an allowlist and replies as your agent, in your tone.
 oauth_config:
   scopes:
     user:
       - im:history # read DM messages
       - im:read # DM channel info
       - users:read # resolve sender names
-      - chat:write # later: send replies as Oliver
+      - chat:write # send agent replies from your account
       - search:read # later: recon of sent messages
 settings:
   event_subscriptions:
