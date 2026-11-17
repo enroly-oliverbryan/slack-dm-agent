@@ -4,6 +4,8 @@ import { SocketModeClient } from "@slack/socket-mode";
 import { WebClient } from "@slack/web-api";
 import { required } from "./env.ts";
 import { BurstTracker, type Burst } from "./bursts.ts";
+import { USER_NAME } from "./env.ts";
+import { triage, type Line } from "./triage.ts";
 
 type Config = {
   allowlist: { id: string; name: string }[];
@@ -60,10 +62,40 @@ else console.warn("No self-DM found, test messages are off. Open your own DM in 
 
 const seen = new Set<string>();
 
-function notify(title: string, body: string) {
+function notify(title: string, body: string, loud = false) {
   // AppleScript string literal: escape backslashes and quotes.
   const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  execFile("osascript", ["-e", `display notification "${esc(body)}" with title "${esc(title)}"`]);
+  const sound = loud ? ' sound name "Sosumi"' : "";
+  execFile("osascript", ["-e", `display notification "${esc(body)}" with title "${esc(title)}"${sound}`]);
+}
+
+const HISTORY_LINES = 10;
+
+// the messages before a burst, oldest first, so triage can tell "thanks" after an answer from a new question.
+async function recentHistory(burst: Burst): Promise<Line[]> {
+  try {
+    const { messages = [] } = await web.conversations.history({
+      channel: burst.channel,
+      latest: burst.messages[0].ts,
+      inclusive: false,
+      limit: HISTORY_LINES,
+    });
+    const sender = allowlist.get(burst.user) ?? "Teammate";
+    return messages
+      .filter((m) => !m.subtype && m.text)
+      .reverse()
+      .map((m) => {
+        const text = m.text ?? "";
+        if (m.user !== selfId) return { from: sender, text };
+        // in the self-DM, "T:" lines are the test teammate's side of the conversation.
+        if (burst.channel === selfDm && TEST_PREFIX.test(text))
+          return { from: sender, text: text.replace(TEST_PREFIX, "") };
+        return { from: USER_NAME, text };
+      });
+  } catch (error) {
+    console.warn("conversations.history failed, triaging without context:", error);
+    return [];
+  }
 }
 
 async function userIsActive(): Promise<boolean> {
@@ -86,10 +118,31 @@ async function handleBurst(burst: Burst) {
     return;
   }
 
-  const text = burst.messages.map((m) => m.text).join("\n");
+  const messages = burst.messages.map((m) => m.text);
+  const text = messages.join("\n");
   console.log(`[${burst.channel}] burst from ${name} (${count} message(s)) ready:\n${text}`);
-  notify(`DM from ${name}`, text);
-  // next: triage, respond.
+
+  let result;
+  try {
+    result = await triage({ sender: name, history: await recentHistory(burst), messages });
+  } catch (error) {
+    // never lose a message to a triage failure: tell the user and stop there.
+    console.error("triage failed:", error);
+    notify(`DM from ${name} (triage failed)`, text);
+    return;
+  }
+
+  const refs = [...result.prs.map((n) => `#${n}`), ...result.jiraKeys];
+  console.log(
+    `[${burst.channel}] triage: ${result.action}${result.urgent ? " (urgent)" : ""} - ${result.reason}` +
+      (result.topics.length ? `\n  topics: ${result.topics.join(", ")}` : "") +
+      (refs.length ? `\n  refs: ${refs.join(", ")}` : "") +
+      `\n  cost: $${result.costUsd.toFixed(4)}`,
+  );
+
+  if (result.action === "ignore" && !result.urgent) return;
+  notify(`DM from ${name}: ${result.urgent ? "URGENT, " : ""}${result.action}`, text, result.urgent);
+  // next: respond to "answer" bursts in shadow mode.
 }
 
 const bursts = new BurstTracker({
