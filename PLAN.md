@@ -60,6 +60,7 @@ One-off script, re-run weekly (or on demand).
 
 - Pull the user's sent messages with `search.messages` (`from:me`), last ~6 months, DMs and channels.
 - Filter noise: bot commands, pasted code/logs, one-word acks (keep a sample of acks - they are part of the voice).
+  Agent posts (sent from the user's account) and the self-DM are excluded.
 - Generate with Opus 5.5:
   - `profile/style.md` - tone, typical length, capitalisation, punctuation, emoji use, sign-offs, how they hedge,
     how they say "I don't know", common phrases. Written as instructions to the agent, including how to carry their
@@ -215,8 +216,11 @@ notification. So always notify locally:
   are stored in the audit log (`feedback`). In the self-DM the reactions are the user's own, so clicking one removes
   it, and that removal is the vote. Needs `reactions:read`/`reactions:write` and the `reaction_added`/
   `reaction_removed` user events.
-- **Feedback into recon**: answers marked ❌ (and the user's own follow-up) fed back as examples in the next recon
-  run.
+- **Feedback into recon** (built): `recon:collect` reads answers real teammates marked ❌ from the audit log, plus
+  what the user said to them in that DM within 24h, into `data/recon/corrections.jsonl`. `recon:build` gives these
+  to Opus, which adds a "Lessons from answers marked ❌" section to `style.md`, and adds each correction with a
+  follow-up to `examples.jsonl` as a question -> the user's own answer. Recon also leaves out the agent's own posts
+  and the self-DM, so the tone profile only learns from the user.
 - **Audit log** (built, `src/audit.ts`): one row per burst in `data/agent.db` (`bursts` table) with the messages,
   triage result, draft, confidence, reasoning, sources, tool calls, hold-back reason, what was sent where, errors,
   cost and duration. `pnpm audit-log` lists recent bursts; `pnpm audit-log <id>` shows one in full.
