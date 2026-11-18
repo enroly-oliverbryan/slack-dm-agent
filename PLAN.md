@@ -46,7 +46,7 @@ It is a first responder for teammates (mostly "how does X in your PR work?"). It
             └──────┬───────┘
                    ▼
    reply (as agent, ✅/❌ reactions) ──▶ macOS notification ──▶ audit log
-   to the teammate, or to the user's self-DM when send_to_teammates is off
+   to the teammate, or to the user's self-DM unless send_to_teammate is on for them
 ```
 
 Runs as a single TypeScript process under `launchd` on the user's Mac. That keeps it next to the local
@@ -183,7 +183,7 @@ Deterministic checks before anything is sent:
 
 ### 6. Send + identity
 
-- Post with `chat.postMessage` using the user token, in the same DM, when `send_to_teammates` is on for that
+- Post with `chat.postMessage` using the user token, in the same DM, when `send_to_teammate` is on for that
   person. Otherwise answers go to the user's self-DM with "· reply to <name>" in the header, and holding replies are
   skipped. Test messages always get their reply in the self-DM.
 - **Identity (always on)**: the message posts from the user's account, so every agent message carries a marker: a
@@ -240,7 +240,7 @@ notification. So always notify locally:
    files are denied, the guard scans outgoing text, and the prompt forbids large pastes. Keep off-limits projects out
    of `project_roots`.
 3. **Wrong answers in the user's name.** The main reputational risk. Mitigated by confidence gate, sources in
-   replies, agent marker, the allowlist, recipient ✅/❌ feedback, and `send_to_teammates` (off by default, so
+   replies, agent marker, the allowlist, recipient ✅/❌ feedback, and `send_to_teammate` (off by default, so
    answers land in the user's self-DM until they turn it on per person). Planned: cooldowns.
 4. **Prompt injection from teammates** (deliberate or pasted content). Read-only tools + guard limit the
    blast radius to "says something it shouldn't".
@@ -258,12 +258,11 @@ notification. So always notify locally:
 
 ```json
 {
-  "allowlist": [{ "id": "U0123ABC", "name": "Sam" }],
+  "allowlist": [{ "id": "U0123ABC", "name": "Sam", "send_to_teammate": false }],
   "debounce_seconds": 45,
   "recent_reply_seconds": 300,
   "skip_when_active": false,
   "confidence_threshold": 0.7,
-  "send_to_teammates": false,
   "sources": {
     "project_roots": ["~/work/my-repo", "~/work/my-repo-*"],
     "github_repos": ["my-org/my-repo"],
@@ -273,8 +272,8 @@ notification. So always notify locally:
 }
 ```
 
-`send_to_teammates` (default `false`, overridable per allowlist entry) decides where replies go. When off, a
-confident answer to a teammate is posted to the user's self-DM with "· reply to <name>" in the header, and holding
+`send_to_teammate` on each allowlist entry (default `false`) decides where that person's replies go. When off, a
+confident answer to them is posted to the user's self-DM with "· reply to <name>" in the header, and holding
 replies are skipped; nothing reaches the teammate. Test (`T:`) messages always get their reply in the self-DM, holding
 replies included.
 
@@ -340,7 +339,7 @@ config.example.json
    still open.
 2. **Recon** (done): collect messages, generate `style.md`, examples and per-person notes.
 3. **Watcher + notify** (done): allowlist, debounce, user-is-here check, dedupe, test mode, notifications.
-4. **Triage + responder** (done): confident answers are sent, otherwise a holding reply; `send_to_teammates` routes
+4. **Triage + responder** (done): confident answers are sent, otherwise a holding reply; `send_to_teammate` routes
    answers to the self-DM until it's switched on.
 5. **Guard + feedback loop**: secret scan, confidence gate, audit log and recipient ✅/❌ feedback (done); length cap,
    cooldown, first-reply intro, `launchd`, startup catch-up (planned).

@@ -2,10 +2,10 @@
   "allowlist": [
     {
       "id": "U0123ABCDEF",
-      "name": "Teammate name"
+      "name": "Teammate name",
+      "send_to_teammate": false
     }
   ],
-  "send_to_teammates": false,
   "debounce_seconds": 45,
   "recent_reply_seconds": 300,
   "skip_when_active": false,
