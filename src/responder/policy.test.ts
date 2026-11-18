@@ -104,6 +104,12 @@ describe("T3Scope", () => {
     assert.deepEqual(decision, { allow: true, input: { limit: 5, settled: false } });
   });
 
+  it("starts with project ids looked up before the session", () => {
+    const scope = new T3Scope(ROOTS, new Map([["p-app", "/work/app"]]));
+    assert.equal(scope.check(`${T3}t3_thread_list`, {}), undefined);
+    assert.ok(scope.check(`${T3}t3_thread_search`, { query: "x", projectId: "p-other" }));
+  });
+
   it("denies t3 tools that change things", () => {
     const scope = new T3Scope(ROOTS);
     assert.ok(scope.check(`${T3}t3_thread_send`, { threadId: "t-app", message: "hi" }));

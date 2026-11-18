@@ -60,7 +60,13 @@ export class T3Scope {
   readonly projects = new Map<string, string>(); // allowed project id -> folder
   private threads = new Set<string>();
 
-  constructor(private roots: string[]) {}
+  // `known`: allowed project ids looked up before the session (see t3-projects.ts), so t3_project_list isn't needed.
+  constructor(
+    private roots: string[],
+    known: Map<string, string> = new Map(),
+  ) {
+    for (const [id, folder] of known) this.projects.set(id, folder);
+  }
 
   // feed every t3 tool response through here.
   record(toolName: string, response: unknown) {

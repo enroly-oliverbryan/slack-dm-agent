@@ -10,6 +10,7 @@ import { personNotes, similarExamples, style } from "../profile.ts";
 import type { Line } from "../triage.ts";
 import { githubServer } from "./github.ts";
 import { decide, T3, T3Scope } from "./policy.ts";
+import { allowedT3Projects } from "./t3-projects.ts";
 
 export const RESPONDER_MODEL = "claude-sonnet-5-5";
 const MAX_TURNS = 25;
@@ -81,7 +82,7 @@ function systemPrompt(senderId: string, senderName: string, question: string) {
 
 # Researching
 Your tools are read-only:
-- T3 Code threads: ${USER_NAME}'s coding sessions, the best source for what they're working on. Call t3_project_list first. Then:
+- T3 Code threads: ${USER_NAME}'s coding sessions, the best source for what they're working on. They're already limited to the allowed projects, so call these directly:
   - "What are you working on", status or progress questions: t3_thread_list with no projectId (newest first, across every allowed project). Use titles, status, updatedAt and linked PRs, then t3_thread_read the latest messages of the top one or two. Start here, before GitHub.
   - Questions about a topic: t3_thread_search with a few keywords and no projectId.
   - A bare number like "6676" usually means a Jira ticket (e.g. ENROLY-6676), and ${USER_NAME}'s thread titles often start with it: search for the number.
@@ -114,7 +115,10 @@ export async function respond(input: {
 }): Promise<Draft> {
   const started = Date.now();
   const question = input.messages.join("\n");
-  const t3 = new T3Scope(config.projectRoots);
+  const t3 = new T3Scope(
+    config.projectRoots,
+    config.t3McpUrl ? await allowedT3Projects(config.projectRoots) : undefined,
+  );
   const toolCalls: string[] = [];
   let t3Problem: string | undefined;
 

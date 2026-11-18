@@ -120,7 +120,7 @@ read-only allowlist; everything else is denied.
 
 | Source               | How                                                                                                                     | Notes                                                              |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| T3 Code threads      | `t3-code` MCP (`t3_mcp_url`): `t3_project_list`, then `t3_thread_list` / `t3_thread_search` / `t3_thread_read`          | Primary source for "what is the user working on"                   |
+| T3 Code threads      | `t3-code` MCP (`t3_mcp_url`): `t3_thread_list` / `t3_thread_search` / `t3_thread_read`                                  | Primary source for "what is the user working on"                   |
 | Claude Code sessions | `Grep`/`Read` scoped to the session folders of `project_roots`                                                          | Fallback / older sessions. JSONL is large: grep first, read slices |
 | Code                 | `Read`/`Grep`/`Glob` under `project_roots`, secret-looking files (`.env`, keys) denied                                  | Where things live and how they work                                |
 | Jira / Confluence    | `atlassian` MCP (user scope, `atlassian_mcp_url`), read tools only: issue, JQL search, comments, Confluence search/page | Ticket context, specs, RFCs                                        |
@@ -137,7 +137,9 @@ Access policy (`src/responder/policy.ts`), enforced by a `PreToolUse` hook on ev
 anything not allowed is refused:
 
 - Code and session logs: paths under `project_roots` only; secret-looking files (`.env`, keys) denied.
-- T3: `t3_project_list` first; list and search may span all projects, and a `PostToolUse` hook strips other
+- T3: before the session, the allowed project IDs are looked up with the `t3` CLI (`t3 thread list --project
+<folder> --json`, cached 10 min; `src/responder/t3-projects.ts`), so no `t3_project_list` call is needed (it stays
+  allowed as a fallback). List and search may span all projects, and a `PostToolUse` hook strips other
   projects, their threads and settled threads (often unfinished or discarded work) from the output. `t3_thread_list`
   is always asked for unsettled threads. Only threads a list or search returned can be read.
 - Atlassian: issue, JQL search, comments, Confluence search and page reads; no writes, no generic execute tools, no
