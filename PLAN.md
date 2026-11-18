@@ -180,8 +180,13 @@ notification. So always notify locally:
 - **Kill switch**: `config.enabled`, a menu-bar toggle or a `/agent off` message to self. Also auto-pause outside
   working hours or when the user's Slack status is set to holiday (configurable either way - holiday is arguably
   when it's most useful, but also when wrong answers sit uncorrected longest).
-- **Feedback loop**: the user reacts to an agent message (👍 / 👎) or edits it. 👎 / edits get stored with the
-  correction and fed back as examples in the next recon run.
+- **Recipient feedback** (built): the agent adds ✅ and ❌ to each answer, with a line asking the recipient to mark
+  it. ✅ removes the "Replied to" notification; ❌ sends the user a loud "<name> still needs you" notification. Votes
+  are stored in the audit log (`feedback`). In the self-DM the reactions are the user's own, so clicking one removes
+  it, and that removal is the vote. Needs `reactions:read`/`reactions:write` and the `reaction_added`/
+  `reaction_removed` user events.
+- **Feedback into recon**: answers marked ❌ (and the user's own follow-up) fed back as examples in the next recon
+  run.
 - **Audit log** (built, `src/audit.ts`): one row per burst in `data/agent.db` (`bursts` table) with the messages,
   triage result, draft, confidence, reasoning, sources, tool calls, hold-back reason, what was sent where, errors,
   cost and duration. `pnpm audit-log` lists recent bursts; `pnpm audit-log <id>` shows one in full.

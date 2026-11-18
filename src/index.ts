@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { SocketModeClient } from "@slack/socket-mode";
 import { WebClient } from "@slack/web-api";
 import { required, USER_NAME } from "./env.ts";
@@ -7,18 +6,22 @@ import { BurstTracker, type Burst } from "./bursts.ts";
 import { triage, type Line } from "./triage.ts";
 import { respond, type Draft } from "./responder/agent.ts";
 import { holdingReply } from "./profile.ts";
-import { agentReply, isAgentMessage } from "./messages.ts";
+import { agentReply, BAD, feedbackFor, GOOD, isAgentMessage } from "./messages.ts";
 import { findSecret } from "./guard.ts";
-import { recordBurst, type AuditRecord } from "./audit.ts";
+import { burstByReply, recordBurst, setFeedback, type AuditRecord } from "./audit.ts";
+import { notify, removeNotification, slackLink } from "./notify.ts";
 
 const { allowlist, debounceSeconds, recentReplySeconds, skipWhenActive } = config;
 
 const web = new WebClient(required("SLACK_USER_TOKEN"));
 const socket = new SocketModeClient({ appToken: required("SLACK_APP_TOKEN") });
 
-const { user_id: selfId } = await web.auth.test();
+const { user_id: selfId, team_id: teamId } = await web.auth.test();
 if (!selfId) throw new Error("auth.test returned no user_id");
-console.log(`Authenticated as ${selfId}. Watching DMs from: ${[...allowlist.values()].join(", ")}`);
+const watching = [...allowlist.values()];
+console.log(
+  `Authenticated as ${selfId}. Watching DMs from: ${watching.length > 10 ? `${watching.length} people` : watching.join(", ")}`,
+);
 console.log(
   `Debounce ${debounceSeconds}s, recent reply window ${recentReplySeconds}s, skip when active: ${skipWhenActive}`,
 );
@@ -45,13 +48,6 @@ if (selfDm) console.log(`Test mode: send "T: <message>" to yourself in Slack (${
 else console.warn("No self-DM found, test messages are off. Open your own DM in Slack once and restart.");
 
 const seen = new Set<string>();
-
-function notify(title: string, body: string, loud = false) {
-  // AppleScript string literal: escape backslashes and quotes.
-  const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  const sound = loud ? ' sound name "Sosumi"' : "";
-  execFile("osascript", ["-e", `display notification "${esc(body)}" with title "${esc(title)}"${sound}`]);
-}
 
 const HISTORY_LINES = 20; // the responder gets all of these, triage the last 10
 
@@ -121,6 +117,7 @@ async function processBurst(burst: Burst, audit: AuditRecord) {
   const name = audit.senderName;
   const messages = audit.messages;
   const text = messages.join("\n");
+  const open = slackLink(teamId, burst.channel); // clicking a notification opens the DM
 
   if (skipWhenActive && (await userIsActive())) {
     console.log(`[${burst.channel}] skipped ${messages.length} message(s) from ${name}: you're active`);
@@ -136,7 +133,7 @@ async function processBurst(burst: Burst, audit: AuditRecord) {
   } catch (error) {
     // never lose a message to a triage failure: tell the user and stop there.
     console.error("triage failed:", error);
-    notify(`DM from ${name} (triage failed)`, text);
+    notify(`DM from ${name} (triage failed)`, text, { open });
     Object.assign(audit, { outcome: "triage-failed", error: (error as Error).message });
     return;
   }
@@ -166,7 +163,7 @@ async function processBurst(burst: Burst, audit: AuditRecord) {
   // requests, decisions, incidents and personal messages are for the user to answer: the agent stays quiet.
   if (result.action !== "answer") {
     console.log(`[${burst.channel}] left for you, no reply sent`);
-    notify(`${name} needs you${result.urgent ? " (URGENT)" : ""}`, text, true);
+    notify(`${name} needs you${result.urgent ? " (URGENT)" : ""}`, text, { loud: true, open });
     audit.outcome = "deferred";
     return;
   }
@@ -187,7 +184,7 @@ async function processBurst(burst: Burst, audit: AuditRecord) {
     console.error("responder failed:", error);
     Object.assign(audit, { outcome: "responder-failed", error: (error as Error).message });
     await send(audit, burst, holdingReply(), { holding: true });
-    notify(`${name} needs you (responder failed)`, text, true);
+    notify(`${name} needs you (responder failed)`, text, { loud: true, open });
     return;
   }
   Object.assign(audit, {
@@ -222,44 +219,61 @@ async function processBurst(burst: Burst, audit: AuditRecord) {
     console.log(`[${burst.channel}] sending a holding reply instead: ${holdBack}`);
     Object.assign(audit, { outcome: "held-back", holdReason: holdBack });
     await send(audit, burst, holdingReply(), { holding: true });
-    notify(`${name} needs you (${holdBack})`, text, true);
+    notify(`${name} needs you (${holdBack})`, text, { loud: true, open });
     return;
   }
   audit.outcome = "answered";
   const sent = await send(audit, burst, draft.reply);
-  notify(sent === "teammate" ? `Replied to ${name}` : `Drafted a reply to ${name}`, draft.reply);
+  // grouped by the reply, so a ✅ on it can take this notification back.
+  notify(sent === "teammate" ? `Replied to ${name}` : `Drafted a reply to ${name}`, draft.reply, {
+    open,
+    group: audit.replyTs && replyGroup(audit.replyTs),
+  });
 }
+
+const replyGroup = (replyTs: string) => `dm-agent-reply-${replyTs}`;
 
 // reply() plus the audit record of what went where.
 async function send(audit: AuditRecord, burst: Burst, text: string, options?: { holding?: boolean }) {
-  const sentTo = await reply(burst, audit.senderName, text, options);
-  audit.sentTo = sentTo;
-  if (sentTo !== "skipped") audit.sentText = text;
-  return sentTo;
+  const sent = await reply(burst, audit.senderName, text, options);
+  audit.sentTo = sent.to;
+  if (sent.to !== "skipped") Object.assign(audit, { sentText: text, replyChannel: sent.channel, replyTs: sent.ts });
+  return sent.to;
 }
 
 // replies in the DM the burst came from when it's a test message or sending to this teammate is on. Otherwise the
 // reply goes to the user's self-DM, naming the teammate, and holding replies are skipped.
+// Answers get ✅ and ❌ reactions for the recipient to mark them; holding replies don't.
 async function reply(
   burst: Burst,
   name: string,
   text: string,
   { holding = false } = {},
-): Promise<"teammate" | "self-dm" | "skipped"> {
+): Promise<{ to: "teammate" | "self-dm" | "skipped"; channel?: string; ts?: string }> {
   const direct = burst.channel === selfDm || config.sendsTo(burst.user);
   if (!direct && (holding || !selfDm)) {
     console.log(`[${burst.channel}] not sending to ${name}${holding ? " (holding reply)" : ""}`);
-    return "skipped";
+    return { to: "skipped" };
   }
   const channel = direct ? burst.channel : selfDm!;
   try {
-    await web.chat.postMessage({ channel, ...agentReply(text, direct ? undefined : name), unfurl_links: false });
+    const message = agentReply(text, { forName: direct ? undefined : name, askFeedback: !holding });
+    const { ts } = await web.chat.postMessage({ channel, ...message, unfurl_links: false });
     console.log(`[${burst.channel}] sent to ${direct ? name : "your self-DM"}`);
-    return direct ? "teammate" : "self-dm";
+    if (!holding && ts) {
+      for (const reaction of [GOOD, BAD]) {
+        try {
+          await web.reactions.add({ channel, timestamp: ts, name: reaction });
+        } catch (error) {
+          console.warn(`adding :${reaction}: failed (reactions:write scope?):`, (error as Error).message);
+        }
+      }
+    }
+    return { to: direct ? "teammate" : "self-dm", channel, ts };
   } catch (error) {
     console.error("sending the reply failed:", error);
-    notify("Agent reply failed to send", text, true);
-    return "skipped";
+    notify("Agent reply failed to send", text, { loud: true });
+    return { to: "skipped" };
   }
 }
 
@@ -307,6 +321,49 @@ socket.on("message", async ({ event, ack }) => {
   console.log(
     `[${event.channel}] ${name}: ${event.text}${result === "user-here" ? "  (you replied recently, leaving it)" : ""}`,
   );
+});
+
+// ✅ / ❌ on an agent answer. A vote is a reaction added by anyone but the user: the recipient marking the answer. In
+// the self-DM the recipient is the user, whose reactions are already there (the agent added them as the user), so
+// clicking one removes it: that removal is the vote.
+type ReactionEvent = {
+  user: string;
+  reaction: string;
+  item: { type: string; channel: string; ts: string };
+  event_ts: string;
+};
+
+function onReaction(event: ReactionEvent, removed: boolean) {
+  if (event.item.type !== "message") return;
+  const feedback = feedbackFor(event.reaction);
+  if (!feedback) return;
+  const isVote = removed ? event.user === selfId && event.item.channel === selfDm : event.user !== selfId;
+  if (!isVote) return;
+
+  const key = `reaction:${event.event_ts}:${event.user}:${event.reaction}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+
+  const burst = burstByReply(event.item.channel, event.item.ts);
+  if (!burst) return;
+  setFeedback(burst.id, feedback);
+  console.log(`[${burst.channel}] #${burst.id} marked ${feedback === "good" ? "answered" : "not answered"}`);
+
+  if (feedback === "good") removeNotification(replyGroup(event.item.ts));
+  else
+    notify(`${burst.senderName} still needs you`, burst.messages.join("\n"), {
+      loud: true,
+      open: slackLink(teamId, burst.channel),
+    });
+}
+
+socket.on("reaction_added", async ({ event, ack }) => {
+  await ack();
+  onReaction(event, false);
+});
+socket.on("reaction_removed", async ({ event, ack }) => {
+  await ack();
+  onReaction(event, true);
 });
 
 socket.on("connected", () => console.log("Socket connected, listening for DMs."));

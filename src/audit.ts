@@ -41,6 +41,10 @@ export type AuditRecord = {
   t3Problem?: string;
   sentText?: string;
   sentTo?: string; // "teammate" | "self-dm" | "skipped"
+  replyChannel?: string; // where the reply was posted, and its ts: how a reaction finds its burst
+  replyTs?: string;
+  feedback?: "good" | "bad"; // the recipient's ✅ / ❌ on the reply
+  feedbackAt?: string;
   error?: string;
   costUsd: number;
   durationMs?: number;
@@ -71,6 +75,10 @@ const COLUMNS = {
   t3Problem: "TEXT",
   sentText: "TEXT",
   sentTo: "TEXT",
+  replyChannel: "TEXT",
+  replyTs: "TEXT",
+  feedback: "TEXT",
+  feedbackAt: "TEXT",
   error: "TEXT",
   costUsd: "REAL NOT NULL",
   durationMs: "INTEGER",
@@ -151,4 +159,20 @@ export function recentBursts(limit = 20): AuditRow[] {
 export function burstById(id: number): AuditRow | undefined {
   const row = open().prepare("SELECT * FROM bursts WHERE id = ?").get(id) as Record<string, unknown> | undefined;
   return row && fromRow(row);
+}
+
+export function burstByReply(channel: string, ts: string): AuditRow | undefined {
+  const row = open().prepare("SELECT * FROM bursts WHERE reply_channel = ? AND reply_ts = ?").get(channel, ts) as
+    Record<string, unknown> | undefined;
+  return row && fromRow(row);
+}
+
+export function setFeedback(id: number, feedback: "good" | "bad") {
+  try {
+    open()
+      .prepare("UPDATE bursts SET feedback = ?, feedback_at = ? WHERE id = ?")
+      .run(feedback, new Date().toISOString(), id);
+  } catch (error) {
+    console.error("audit log feedback write failed:", error);
+  }
 }

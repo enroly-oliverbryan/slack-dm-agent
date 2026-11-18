@@ -29,7 +29,8 @@ if (id) {
       (r.confidence !== undefined ? `confidence ${r.confidence.toFixed(2)}` : (r.triageReason ?? r.error ?? ""));
     console.log(
       `#${r.id}  ${when}  ${r.senderName}${r.test ? " (test)" : ""}  ${r.outcome ?? "?"}` +
-        `${r.sentTo ? ` -> ${r.sentTo}` : ""}  $${r.costUsd.toFixed(3)}\n` +
+        `${r.sentTo ? ` -> ${r.sentTo}` : ""}${r.feedback ? `  [${r.feedback === "good" ? "✅" : "❌"}]` : ""}` +
+        `  $${r.costUsd.toFixed(3)}\n` +
         `    in:  ${oneLine(r.messages.join(" / "), 110)}\n` +
         (r.sentText ? `    out: ${oneLine(r.sentText, 110)}\n` : "") +
         (detail ? `    why: ${oneLine(detail, 110)}\n` : ""),
