@@ -1,7 +1,9 @@
 // groups a teammate's messages in a DM into one burst, released after a quiet period.
 // a burst is dropped if the user posts in that DM while it's pending, or posted recently before it.
 
-export type Message = { ts: string; text: string };
+import type { SlackFile } from "./files.ts";
+
+export type Message = { ts: string; text: string; files?: SlackFile[] };
 export type Burst = { channel: string; user: string; messages: Message[] };
 export type AddResult = "pending" | "user-here";
 

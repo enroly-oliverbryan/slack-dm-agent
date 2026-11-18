@@ -78,12 +78,12 @@ One-off script, re-run weekly (or on demand).
 - Slack app with a **user token** (`xoxp`). Replies post from the user's account, so the message text itself must
   say it's the agent (see Identity).
   - User scopes: `im:history`, `im:read`, `chat:write`, `users:read`, `search:read` (recon), `reactions:read` and
-    `reactions:write` (recipient feedback).
+    `reactions:write` (recipient feedback), `files:read` (attachments).
   - Event subscriptions (user events): `message.im`, `reaction_added`, `reaction_removed`.
   - Socket Mode with an app-level token, so no public URL is needed.
 - Filters, in order:
   1. Channel is a 1:1 DM, sender is in `config.allowlist`.
-  2. Not a bot message, edit, or deletion (`subtype` empty).
+  2. Not a bot message, edit, or deletion (`subtype` empty, or `file_share` for messages with files).
   3. Dedupe by channel + `ts` (Socket Mode retries).
   4. The agent's own posts (recognised by the marker's `block_id`) are skipped.
 - **Debounce**: people send 2-4 messages in a row. Wait for N seconds of quiet (default 45s) then process the burst
@@ -92,6 +92,10 @@ One-off script, re-run weekly (or on demand).
   presence is `active` and they're not in "focus/away" (configurable - they may want it on even while active).
 - Only reply once per burst. Planned: after a reply, a per-person cooldown (default 10 min) so it doesn't become a
   chat; follow-ups within the cooldown just notify the user.
+- **Attachments** (`src/files.ts`): files on a burst's messages are downloaded with the user token. Images (PNG,
+  JPEG, GIF, WebP; up to 4, 5 MB each) go to triage and the responder as image blocks; text files and snippets (up
+  to 100 KB) go inline; anything else (PDFs, HEIC, archives, failed downloads) is named so the model knows it's
+  there. File names are recorded in the audit log.
 - Test mode: in the user's self-DM, messages starting with `T:` act as a teammate's DM, so the whole flow can be
   tried without anyone else.
 

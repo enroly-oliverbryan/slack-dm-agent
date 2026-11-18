@@ -10,10 +10,12 @@ import { agentReply, BAD, feedbackFor, GOOD, isAgentMessage } from "./messages.t
 import { findSecret } from "./guard.ts";
 import { burstByReply, recordBurst, setFeedback, type AuditRecord } from "./audit.ts";
 import { notify, removeNotification, slackLink } from "./notify.ts";
+import { fileName, readAttachments, type SlackFile } from "./files.ts";
 
 const { allowlist, debounceSeconds, recentReplySeconds, skipWhenActive } = config;
 
-const web = new WebClient(required("SLACK_USER_TOKEN"));
+const userToken = required("SLACK_USER_TOKEN");
+const web = new WebClient(userToken);
 const socket = new SocketModeClient({ appToken: required("SLACK_APP_TOKEN") });
 
 const { user_id: selfId, team_id: teamId } = await web.auth.test();
@@ -62,10 +64,11 @@ async function recentHistory(burst: Burst): Promise<Line[]> {
     });
     const sender = allowlist.get(burst.user) ?? "Teammate";
     return messages
-      .filter((m) => !m.subtype && m.text)
+      .filter((m) => (!m.subtype || m.subtype === "file_share") && (m.text || m.files?.length))
       .reverse()
       .map((m) => {
-        const text = m.text ?? "";
+        const files = (m.files as SlackFile[] | undefined)?.map(fileName);
+        const text = `${m.text ?? ""}${files?.length ? ` [attached: ${files.join(", ")}]` : ""}`;
         if (m.user !== selfId) return { from: sender, text };
         if (isAgentMessage(m)) return { from: `${USER_NAME}'s agent`, text };
         // in the self-DM, "T:" lines are the test teammate's side of the conversation.
@@ -99,6 +102,7 @@ async function handleBurst(burst: Burst) {
     senderName: allowlist.get(burst.user) ?? burst.user,
     test: burst.channel === selfDm,
     messages: burst.messages.map((m) => m.text),
+    files: burst.messages.flatMap((m) => m.files ?? []).map(fileName),
     costUsd: 0,
   };
   try {
@@ -127,9 +131,15 @@ async function processBurst(burst: Burst, audit: AuditRecord) {
   console.log(`[${burst.channel}] burst from ${name} (${messages.length} message(s)) ready:\n${text}`);
 
   const history = await recentHistory(burst);
+  const files = burst.messages.flatMap((m) => m.files ?? []);
+  const attachments = files.length ? await readAttachments(files, userToken) : undefined;
+  if (attachments?.skipped.length)
+    console.log(
+      `[${burst.channel}] couldn't read: ${attachments.skipped.map((f) => `${f.name} (${f.why})`).join(", ")}`,
+    );
   let result;
   try {
-    result = await triage({ sender: name, history: history.slice(-10), messages });
+    result = await triage({ sender: name, history: history.slice(-10), messages, attachments });
   } catch (error) {
     // never lose a message to a triage failure: tell the user and stop there.
     console.error("triage failed:", error);
@@ -179,6 +189,7 @@ async function processBurst(burst: Burst, audit: AuditRecord) {
       topics: result.topics,
       prs: result.prs,
       jiraKeys: result.jiraKeys,
+      attachments,
     });
   } catch (error) {
     console.error("responder failed:", error);
@@ -286,8 +297,9 @@ const bursts = new BurstTracker({
 socket.on("message", async ({ event, ack }) => {
   await ack();
 
-  // only plain new messages in 1:1 DMs. Subtypes cover edits, deletes, joins, bot posts.
-  if (event.channel_type !== "im" || event.subtype || event.bot_id) return;
+  // only new messages in 1:1 DMs, plain or with files. Other subtypes cover edits, deletes, joins, bot posts.
+  if (event.channel_type !== "im" || (event.subtype && event.subtype !== "file_share") || event.bot_id) return;
+  const files: SlackFile[] | undefined = event.files?.length ? event.files : undefined;
 
   const key = `${event.channel}:${event.ts}`;
   if (seen.has(key)) return;
@@ -298,7 +310,7 @@ socket.on("message", async ({ event, ack }) => {
 
   if (event.user === selfId && event.channel === selfDm && TEST_PREFIX.test(event.text ?? "")) {
     const text = (event.text ?? "").replace(TEST_PREFIX, "");
-    const result = bursts.add(event.channel, TEST_SENDER, { ts: event.ts, text });
+    const result = bursts.add(event.channel, TEST_SENDER, { ts: event.ts, text, files });
     console.log(
       `[${event.channel}] test: ${text}${result === "user-here" ? "  (you replied recently, leaving it)" : ""}`,
     );
@@ -317,7 +329,7 @@ socket.on("message", async ({ event, ack }) => {
   const name = allowlist.get(event.user);
   if (!name) return;
 
-  const result = bursts.add(event.channel, event.user, { ts: event.ts, text: event.text ?? "" });
+  const result = bursts.add(event.channel, event.user, { ts: event.ts, text: event.text ?? "", files });
   console.log(
     `[${event.channel}] ${name}: ${event.text}${result === "user-here" ? "  (you replied recently, leaving it)" : ""}`,
   );

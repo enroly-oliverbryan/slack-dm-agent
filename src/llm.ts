@@ -1,4 +1,5 @@
 import { query, type EffortLevel } from "@anthropic-ai/claude-agent-sdk";
+import { promptWithImages, type Attachments } from "./files.ts";
 
 // one-shot structured generation on the Claude Code login (no API key needed).
 // no tools, no settings, no saved session: the model only sees the prompts.
@@ -8,9 +9,11 @@ export async function generate<T>(opts: {
   systemPrompt: string;
   prompt: string;
   schema: Record<string, unknown>;
+  // images from these are sent after the prompt; describe the attachments in `prompt` itself.
+  attachments?: Attachments;
 }): Promise<{ output: T; costUsd: number }> {
   for await (const message of query({
-    prompt: opts.prompt,
+    prompt: opts.attachments?.images.length ? promptWithImages(opts.prompt, opts.attachments) : opts.prompt,
     options: {
       model: opts.model,
       effort: opts.effort,

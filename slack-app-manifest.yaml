@@ -11,6 +11,7 @@ oauth_config:
       - search:read # later: recon of sent messages
       - reactions:read # ✅ / ❌ feedback on agent answers
       - reactions:write # add ✅ / ❌ to agent answers
+      - files:read # screenshots, logs and files attached to DMs
 settings:
   event_subscriptions:
     user_events:

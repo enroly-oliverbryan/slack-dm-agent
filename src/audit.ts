@@ -24,6 +24,7 @@ export type AuditRecord = {
   senderName: string;
   test: boolean;
   messages: string[];
+  files?: string[]; // names of attached files
   outcome?: Outcome;
   holdReason?: string;
   triageAction?: string;
@@ -58,6 +59,7 @@ const COLUMNS = {
   senderName: "TEXT NOT NULL",
   test: "INTEGER NOT NULL",
   messages: "TEXT NOT NULL",
+  files: "TEXT",
   outcome: "TEXT",
   holdReason: "TEXT",
   triageAction: "TEXT",
@@ -142,7 +144,7 @@ function fromRow(row: Record<string, unknown>): AuditRow {
   for (const f of FIELDS) {
     const value = row[column(f)];
     if (value === null) continue;
-    if (["messages", "topics", "prs", "jiraKeys", "sources", "toolCalls"].includes(f))
+    if (["messages", "files", "topics", "prs", "jiraKeys", "sources", "toolCalls"].includes(f))
       out[f] = JSON.parse(value as string);
     else if (["test", "triageUrgent", "needsUser"].includes(f)) out[f] = value === 1;
     else out[f] = value;
