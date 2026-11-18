@@ -194,7 +194,7 @@ Leads from triage: topics ${input.topics.join(", ") || "none"}; PRs ${input.prs.
       prompt,
       options: {
         model: RESPONDER_MODEL,
-        effort: "medium",
+        effort: "high",
         systemPrompt: systemPrompt(input.senderId, input.senderName, question),
         tools: ["Read", "Grep", "Glob"],
         mcpServers,
