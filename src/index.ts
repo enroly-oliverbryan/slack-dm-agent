@@ -11,6 +11,7 @@ import { findSecret } from "./guard.ts";
 import { burstByReply, recordBurst, setFeedback, type AuditRecord } from "./audit.ts";
 import { notify, removeNotification, slackLink } from "./notify.ts";
 import { fileName, readAttachments, type SlackFile } from "./files.ts";
+import { log, short, VERBOSE } from "./log.ts";
 
 const { allowlist, debounceSeconds, recentReplySeconds, skipWhenActive } = config;
 
@@ -20,12 +21,9 @@ const socket = new SocketModeClient({ appToken: required("SLACK_APP_TOKEN") });
 
 const { user_id: selfId, team_id: teamId } = await web.auth.test();
 if (!selfId) throw new Error("auth.test returned no user_id");
-const watching = [...allowlist.values()];
-console.log(
-  `Authenticated as ${selfId}. Watching DMs from: ${watching.length > 10 ? `${watching.length} people` : watching.join(", ")}`,
-);
-console.log(
-  `Debounce ${debounceSeconds}s, recent reply window ${recentReplySeconds}s, skip when active: ${skipWhenActive}`,
+log.debug(
+  `authenticated as ${selfId}; debounce ${debounceSeconds}s, recent reply window ${recentReplySeconds}s, ` +
+    `skip when active: ${skipWhenActive}`,
 );
 
 // messages you send to yourself starting with "T:" play the part of a teammate, so the whole flow can be tested
@@ -46,8 +44,11 @@ async function findSelfDm(): Promise<string | undefined> {
 }
 
 const selfDm = await findSelfDm();
-if (selfDm) console.log(`Test mode: send "T: <message>" to yourself in Slack (${selfDm}).`);
-else console.warn("No self-DM found, test messages are off. Open your own DM in Slack once and restart.");
+if (!selfDm) log.warn("no self-DM found, so test messages are off. Open your own DM in Slack once and restart");
+log.info(
+  `watching ${allowlist.size - 1} people${selfDm ? ' · test with "T: <message>" in your self-DM' : ""}` +
+    `${VERBOSE ? "" : " · VERBOSE=1 for detail"}`,
+);
 
 const seen = new Set<string>();
 
@@ -77,7 +78,7 @@ async function recentHistory(burst: Burst): Promise<Line[]> {
         return { from: USER_NAME, text };
       });
   } catch (error) {
-    console.warn("conversations.history failed, triaging without context:", error);
+    log.warn("couldn't read the DM history, triaging without it", error);
     return [];
   }
 }
@@ -88,7 +89,7 @@ async function userIsActive(): Promise<boolean> {
     return presence === "active";
   } catch (error) {
     // presence is a soft signal: if Slack won't say, carry on as if away.
-    console.warn("users.getPresence failed:", error);
+    log.warnOnce("presence", "couldn't read your Slack presence", error);
     return false;
   }
 }
@@ -113,8 +114,33 @@ async function handleBurst(burst: Burst) {
   } finally {
     audit.durationMs = Date.now() - started;
     const id = recordBurst(audit);
-    if (id) console.log(`[${burst.channel}] logged as #${id} (pnpm audit-log ${id})`);
+    log.info(summary(audit, id));
   }
+}
+
+// one line per burst: who, what, what happened. `pnpm audit-log <id>` has the rest.
+function summary(audit: AuditRecord, id: number | undefined): string {
+  const first = audit.messages.find((m) => m.trim()) ?? (audit.files?.length ? `[${audit.files.join(", ")}]` : "");
+  const more = audit.messages.length > 1 ? ` (+${audit.messages.length - 1})` : "";
+  const secs = `${Math.round((audit.durationMs ?? 0) / 1000)}s`;
+  const cost = `$${audit.costUsd.toFixed(2)}`;
+  const outcome = (() => {
+    switch (audit.outcome) {
+      case "answered":
+        return `${audit.sentTo === "self-dm" ? "drafted to your self-DM" : "answered"} (${audit.confidence?.toFixed(2)} · ${secs} · ${cost})`;
+      case "held-back":
+        return `held back: ${audit.holdReason} (${audit.sentTo === "skipped" ? "nothing sent" : "holding reply sent"} · ${cost})`;
+      case "deferred":
+        return `left for you${audit.triageUrgent ? " (urgent)" : ""}`;
+      case "ignored":
+        return "ignored";
+      case "skipped-active":
+        return "skipped, you're active";
+      default:
+        return `${audit.outcome ?? "failed"}${audit.error ? `: ${short(audit.error, 80)}` : ""}`;
+    }
+  })();
+  return `${audit.senderName} "${short(first)}"${more} → ${outcome}${id ? ` #${id}` : ""}`;
 }
 
 async function processBurst(burst: Burst, audit: AuditRecord) {
@@ -124,25 +150,23 @@ async function processBurst(burst: Burst, audit: AuditRecord) {
   const open = slackLink(teamId, burst.channel); // clicking a notification opens the DM
 
   if (skipWhenActive && (await userIsActive())) {
-    console.log(`[${burst.channel}] skipped ${messages.length} message(s) from ${name}: you're active`);
+    log.debug(`${name}: skipped, you're active`);
     audit.outcome = "skipped-active";
     return;
   }
-  console.log(`[${burst.channel}] burst from ${name} (${messages.length} message(s)) ready:\n${text}`);
+  log.debug(`${name}: handling ${messages.length} message(s)`);
 
   const history = await recentHistory(burst);
   const files = burst.messages.flatMap((m) => m.files ?? []);
   const attachments = files.length ? await readAttachments(files, userToken) : undefined;
   if (attachments?.skipped.length)
-    console.log(
-      `[${burst.channel}] couldn't read: ${attachments.skipped.map((f) => `${f.name} (${f.why})`).join(", ")}`,
-    );
+    log.warn(`${name}: couldn't read ${attachments.skipped.map((f) => `${f.name} (${f.why})`).join(", ")}`);
   let result;
   try {
     result = await triage({ sender: name, history: history.slice(-10), messages, attachments });
   } catch (error) {
     // never lose a message to a triage failure: tell the user and stop there.
-    console.error("triage failed:", error);
+    log.debug(`triage failed: ${(error as Error).stack ?? error}`);
     notify(`DM from ${name} (triage failed)`, text, { open });
     Object.assign(audit, { outcome: "triage-failed", error: (error as Error).message });
     return;
@@ -158,8 +182,8 @@ async function processBurst(burst: Burst, audit: AuditRecord) {
   });
 
   const refs = [...result.prs.map((n) => `#${n}`), ...result.jiraKeys];
-  console.log(
-    `[${burst.channel}] triage: ${result.action}${result.urgent ? " (urgent)" : ""} - ${result.reason}` +
+  log.debug(
+    `${name}: triage ${result.action}${result.urgent ? " (urgent)" : ""} - ${result.reason}` +
       (result.topics.length ? `\n  topics: ${result.topics.join(", ")}` : "") +
       (refs.length ? `\n  refs: ${refs.join(", ")}` : "") +
       `\n  cost: $${result.costUsd.toFixed(4)}`,
@@ -172,13 +196,13 @@ async function processBurst(burst: Burst, audit: AuditRecord) {
 
   // requests, decisions, incidents and personal messages are for the user to answer: the agent stays quiet.
   if (result.action !== "answer") {
-    console.log(`[${burst.channel}] left for you, no reply sent`);
+    log.debug(`${name}: left for you, no reply sent`);
     notify(`${name} needs you${result.urgent ? " (URGENT)" : ""}`, text, { loud: true, open });
     audit.outcome = "deferred";
     return;
   }
 
-  console.log(`[${burst.channel}] researching a reply...`);
+  log.debug(`${name}: researching a reply...`);
   let draft: Draft;
   try {
     draft = await respond({
@@ -192,7 +216,7 @@ async function processBurst(burst: Burst, audit: AuditRecord) {
       attachments,
     });
   } catch (error) {
-    console.error("responder failed:", error);
+    log.debug(`responder failed: ${(error as Error).stack ?? error}`);
     Object.assign(audit, { outcome: "responder-failed", error: (error as Error).message });
     await send(audit, burst, holdingReply(), { holding: true });
     notify(`${name} needs you (responder failed)`, text, { loud: true, open });
@@ -217,17 +241,21 @@ async function processBurst(burst: Burst, audit: AuditRecord) {
       : secret
         ? `draft looked like it held a ${secret}`
         : undefined;
-  console.log(
-    `[${burst.channel}] draft: confidence ${draft.confidence.toFixed(2)}${draft.needsUser ? ", needs you" : ""} · ` +
+  if (draft.t3Problem)
+    log.warnOnce(
+      `t3:${draft.t3Problem}`,
+      `T3 unavailable (${draft.t3Problem}): re-approve t3-code via /mcp in Claude Code`,
+    );
+  log.debug(
+    `${name}: draft, confidence ${draft.confidence.toFixed(2)}${draft.needsUser ? ", needs you" : ""} · ` +
       `${(draft.durationMs / 1000).toFixed(0)}s · $${draft.costUsd.toFixed(3)} · ${draft.toolCalls.join(", ") || "no tools"}` +
       `\n  reasoning: ${draft.reasoning}` +
       (draft.sources.length ? `\n  sources: ${draft.sources.join(", ")}` : "") +
-      (draft.t3Problem ? `\n  T3 unavailable (${draft.t3Problem}): re-approve t3-code via /mcp in Claude Code` : "") +
       `\n${draft.reply}`,
   );
 
   if (holdBack) {
-    console.log(`[${burst.channel}] sending a holding reply instead: ${holdBack}`);
+    log.debug(`${name}: holding back (${holdBack})`);
     Object.assign(audit, { outcome: "held-back", holdReason: holdBack });
     await send(audit, burst, holdingReply(), { holding: true });
     notify(`${name} needs you (${holdBack})`, text, { loud: true, open });
@@ -263,26 +291,30 @@ async function reply(
 ): Promise<{ to: "teammate" | "self-dm" | "skipped"; channel?: string; ts?: string }> {
   const direct = burst.channel === selfDm || config.sendsTo(burst.user);
   if (!direct && (holding || !selfDm)) {
-    console.log(`[${burst.channel}] not sending to ${name}${holding ? " (holding reply)" : ""}`);
+    log.debug(`${name}: not sending${holding ? " a holding reply" : ""}`);
     return { to: "skipped" };
   }
   const channel = direct ? burst.channel : selfDm!;
   try {
     const message = agentReply(text, { forName: direct ? undefined : name, askFeedback: !holding });
     const { ts } = await web.chat.postMessage({ channel, ...message, unfurl_links: false });
-    console.log(`[${burst.channel}] sent to ${direct ? name : "your self-DM"}`);
+    log.debug(`${name}: sent to ${direct ? name : "your self-DM"}`);
     if (!holding && ts) {
       for (const reaction of [GOOD, BAD]) {
         try {
           await web.reactions.add({ channel, timestamp: ts, name: reaction });
         } catch (error) {
-          console.warn(`adding :${reaction}: failed (reactions:write scope?):`, (error as Error).message);
+          log.warnOnce(
+            `reaction:${(error as Error).message}`,
+            `couldn't add ✅/❌ to replies (reactions:write scope?)`,
+            error,
+          );
         }
       }
     }
     return { to: direct ? "teammate" : "self-dm", channel, ts };
   } catch (error) {
-    console.error("sending the reply failed:", error);
+    log.error(`couldn't send the reply to ${name}`, error);
     notify("Agent reply failed to send", text, { loud: true });
     return { to: "skipped" };
   }
@@ -291,7 +323,7 @@ async function reply(
 const bursts = new BurstTracker({
   quietMs: debounceSeconds * 1000,
   recentReplyMs: recentReplySeconds * 1000,
-  onReady: (burst) => void handleBurst(burst).catch((error) => console.error("handleBurst failed:", error)),
+  onReady: (burst) => void handleBurst(burst).catch((error) => log.error("handling a burst failed", error)),
 });
 
 socket.on("message", async ({ event, ack }) => {
@@ -311,18 +343,15 @@ socket.on("message", async ({ event, ack }) => {
   if (event.user === selfId && event.channel === selfDm && TEST_PREFIX.test(event.text ?? "")) {
     const text = (event.text ?? "").replace(TEST_PREFIX, "");
     const result = bursts.add(event.channel, TEST_SENDER, { ts: event.ts, text, files });
-    console.log(
-      `[${event.channel}] test: ${text}${result === "user-here" ? "  (you replied recently, leaving it)" : ""}`,
-    );
+    log.debug(`test: ${short(text)}${result === "user-here" ? " (you replied recently, leaving it)" : ""}`);
     return;
   }
 
   if (event.user === selfId) {
     const cancelled = bursts.selfPosted(event.channel, event.ts);
-    const hint = event.channel === selfDm ? '  (counts as your reply; start with "T:" to send a test message)' : "";
-    console.log(`[${event.channel}] you: ${event.text}${hint}`);
-    if (cancelled)
-      console.log(`[${event.channel}] you replied, dropped ${cancelled.messages.length} pending message(s)`);
+    const hint = event.channel === selfDm ? ' (counts as your reply; start with "T:" to send a test message)' : "";
+    log.debug(`you: ${short(event.text ?? "")}${hint}`);
+    if (cancelled) log.debug(`you replied, dropped ${cancelled.messages.length} pending message(s)`);
     return;
   }
 
@@ -330,8 +359,8 @@ socket.on("message", async ({ event, ack }) => {
   if (!name) return;
 
   const result = bursts.add(event.channel, event.user, { ts: event.ts, text: event.text ?? "", files });
-  console.log(
-    `[${event.channel}] ${name}: ${event.text}${result === "user-here" ? "  (you replied recently, leaving it)" : ""}`,
+  log.debug(
+    `${name}: ${short(event.text ?? "")}${result === "user-here" ? " (you replied recently, leaving it)" : ""}`,
   );
 });
 
@@ -359,7 +388,8 @@ function onReaction(event: ReactionEvent, removed: boolean) {
   const burst = burstByReply(event.item.channel, event.item.ts);
   if (!burst) return;
   setFeedback(burst.id, feedback);
-  console.log(`[${burst.channel}] #${burst.id} marked ${feedback === "good" ? "answered" : "not answered"}`);
+  const voter = event.user === selfId ? "you" : (allowlist.get(event.user) ?? "someone");
+  log.info(`#${burst.id} ${feedback === "good" ? "✅" : "❌"} from ${voter} (${burst.senderName})`);
 
   if (feedback === "good") removeNotification(replyGroup(event.item.ts));
   else
@@ -378,7 +408,7 @@ socket.on("reaction_removed", async ({ event, ack }) => {
   onReaction(event, true);
 });
 
-socket.on("connected", () => console.log("Socket connected, listening for DMs."));
-socket.on("disconnected", () => console.warn("Socket disconnected, reconnecting..."));
+socket.on("connected", () => log.debug("socket connected"));
+socket.on("disconnected", () => log.warn("Slack connection dropped, reconnecting"));
 
 await socket.start();
