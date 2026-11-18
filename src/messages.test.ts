@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 process.env.USER_NAME ??= "Sam";
-const { agentReply, feedbackFor, isAgentMessage } = await import("./messages.ts");
+const { agentReply, feedbackFor, isAgentMessage, looksLikeAgentMessage } = await import("./messages.ts");
 const { AGENT_HEADER } = await import("./env.ts");
 
 describe("agent messages", () => {
@@ -40,5 +40,10 @@ describe("agent messages", () => {
     assert.equal(feedbackFor("heavy_check_mark"), "good");
     assert.equal(feedbackFor("x"), "bad");
     assert.equal(feedbackFor("thumbsup"), undefined);
+  });
+
+  it("are recognised by their header text when blocks are missing", () => {
+    assert.equal(looksLikeAgentMessage({ text: agentReply("hi").text }), true);
+    assert.equal(looksLikeAgentMessage({ text: "hi from me" }), false);
   });
 });

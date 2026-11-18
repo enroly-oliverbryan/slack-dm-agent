@@ -176,3 +176,13 @@ export function setFeedback(id: number, feedback: "good" | "bad") {
     console.error("audit log feedback write failed:", error);
   }
 }
+
+// answers a real teammate (not a test) marked ❌, oldest first.
+export function markedBad(): AuditRow[] {
+  return (
+    open().prepare("SELECT * FROM bursts WHERE feedback = 'bad' AND test = 0 ORDER BY id").all() as Record<
+      string,
+      unknown
+    >[]
+  ).map(fromRow);
+}

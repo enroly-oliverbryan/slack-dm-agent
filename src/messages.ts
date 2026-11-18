@@ -12,6 +12,10 @@ const SECTION_LIMIT = 3000; // Slack's cap on a section block's text
 export const isAgentMessage = (message: { blocks?: { block_id?: string }[] }) =>
   !!message.blocks?.some((b) => b.block_id === REPLY_ID);
 
+// also catches messages whose blocks weren't returned (e.g. search results), by the header text they start with.
+export const looksLikeAgentMessage = (message: { text?: string; blocks?: { block_id?: string }[] }) =>
+  isAgentMessage(message) || !!message.text?.startsWith(AGENT_HEADER);
+
 // block_ids must be unique within a message: only the header line carries REPLY_ID.
 const small = (text: string, blockId?: string): KnownBlock => ({
   type: "context",
