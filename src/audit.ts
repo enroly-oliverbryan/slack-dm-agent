@@ -23,6 +23,7 @@ export type AuditRecord = {
   senderId: string;
   senderName: string;
   test: boolean;
+  afk?: boolean; // the user was AFK: teammates were told, and answers went to them directly
   messages: string[];
   files?: string[]; // names of attached files
   outcome?: Outcome;
@@ -58,6 +59,7 @@ const COLUMNS = {
   senderId: "TEXT NOT NULL",
   senderName: "TEXT NOT NULL",
   test: "INTEGER NOT NULL",
+  afk: "INTEGER",
   messages: "TEXT NOT NULL",
   files: "TEXT",
   outcome: "TEXT",
@@ -146,7 +148,7 @@ function fromRow(row: Record<string, unknown>): AuditRow {
     if (value === null) continue;
     if (["messages", "files", "topics", "prs", "jiraKeys", "sources", "toolCalls"].includes(f))
       out[f] = JSON.parse(value as string);
-    else if (["test", "triageUrgent", "needsUser"].includes(f)) out[f] = value === 1;
+    else if (["test", "afk", "triageUrgent", "needsUser"].includes(f)) out[f] = value === 1;
     else out[f] = value;
   }
   return out as AuditRow;
@@ -154,6 +156,13 @@ function fromRow(row: Record<string, unknown>): AuditRow {
 
 export function recentBursts(limit = 20): AuditRow[] {
   return (open().prepare("SELECT * FROM bursts ORDER BY id DESC LIMIT ?").all(limit) as Record<string, unknown>[]).map(
+    fromRow,
+  );
+}
+
+// bursts handled since an ISO time, oldest first.
+export function burstsSince(at: string): AuditRow[] {
+  return (open().prepare("SELECT * FROM bursts WHERE at >= ? ORDER BY id").all(at) as Record<string, unknown>[]).map(
     fromRow,
   );
 }

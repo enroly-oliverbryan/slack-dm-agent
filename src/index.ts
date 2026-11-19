@@ -8,10 +8,11 @@ import { respond, type Draft } from "./responder/agent.ts";
 import { holdingReply } from "./profile.ts";
 import { agentReply, BAD, feedbackFor, GOOD, isAgentMessage } from "./messages.ts";
 import { findSecret } from "./guard.ts";
-import { burstByReply, recordBurst, setFeedback, type AuditRecord } from "./audit.ts";
+import { burstByReply, burstsSince, recordBurst, setFeedback, type AuditRecord, type AuditRow } from "./audit.ts";
 import { notify, removeNotification, slackLink } from "./notify.ts";
 import { fileName, readAttachments, type SlackFile } from "./files.ts";
 import { log, short, VERBOSE } from "./log.ts";
+import { AfkMode, awayNote, describeAway, parseAfkCommand, type AfkCommand, type Away } from "./afk.ts";
 
 const { allowlist, debounceSeconds, recentReplySeconds, skipWhenActive } = config;
 
@@ -49,6 +50,60 @@ log.info(
   `watching ${allowlist.size - 1} people${selfDm ? ' · test with "T: <message>" in your self-DM' : ""}` +
     `${VERBOSE ? "" : " · VERBOSE=1 for detail"}`,
 );
+
+// posts an agent message in the self-DM: AFK confirmations and summaries.
+async function postToSelf(text: string) {
+  if (!selfDm) return;
+  try {
+    await web.chat.postMessage({ channel: selfDm, ...agentReply(text), unfurl_links: false });
+  } catch (error) {
+    log.warn("couldn't post in your self-DM", error);
+  }
+}
+
+const afk = new AfkMode(undefined, (away) => {
+  log.info(`AFK mode ended (was ${describeAway(away)})`);
+  void postToSelf(whileAway(away, "AFK mode ended."));
+});
+// checked every minute, so an AFK period with an end time ends (and its summary posts) on time.
+setInterval(() => afk.current(), 60_000);
+const away = afk.current();
+if (away) log.info(`AFK mode is on: ${describeAway(away)} · say "back" in your self-DM to end it`);
+
+function onAfkCommand(command: AfkCommand) {
+  if (command.on) {
+    const away = afk.start(command.until, command.reason);
+    log.info(`AFK mode on: ${describeAway(away)}`);
+    void postToSelf(
+      `AFK mode on: ${describeAway(away)}. Teammates who DM you get an away note and whatever answers I can find ` +
+        "(in this DM unless `send_to_teammate_afk` is on for them). Say `back` to end it.",
+    );
+    return;
+  }
+  const away = afk.end();
+  if (!away) return void postToSelf("AFK mode wasn't on.");
+  log.info("AFK mode off");
+  void postToSelf(whileAway(away, "Welcome back."));
+}
+
+// what happened while the user was away, for the self-DM.
+function whileAway(away: Away, heading: string): string {
+  const rows = burstsSince(away.since).filter((row) => row.outcome !== "ignored");
+  if (!rows.length) return `${heading} Nobody needed you while you were away.`;
+  const outcome = (row: AuditRow) =>
+    row.outcome === "answered"
+      ? row.needsUser
+        ? "sent what I found, needs you"
+        : "answered"
+      : row.outcome === "deferred" && row.triageUrgent
+        ? "*needs you (urgent)*"
+        : "needs you";
+  const lines = rows.map((row) => {
+    const first = row.messages.find((m) => m.trim()) ?? "[attachment]";
+    return `• ${row.senderName}: "${short(first)}" → ${outcome(row)} (#${row.id})`;
+  });
+  return `${heading} While you were away:\n${lines.join("\n")}`;
+}
 
 const seen = new Set<string>();
 
@@ -124,14 +179,15 @@ function summary(audit: AuditRecord, id: number | undefined): string {
   const more = audit.messages.length > 1 ? ` (+${audit.messages.length - 1})` : "";
   const secs = `${Math.round((audit.durationMs ?? 0) / 1000)}s`;
   const cost = `$${audit.costUsd.toFixed(2)}`;
+  const note = audit.sentTo === "self-dm" ? "away note drafted to your self-DM" : "away note sent";
   const outcome = (() => {
     switch (audit.outcome) {
       case "answered":
-        return `${audit.sentTo === "self-dm" ? "drafted to your self-DM" : "answered"} (${audit.confidence?.toFixed(2)} · ${secs} · ${cost})`;
+        return `${audit.sentTo === "self-dm" ? "drafted to your self-DM" : audit.needsUser ? "answered in part" : "answered"} (${audit.confidence?.toFixed(2)} · ${secs} · ${cost})`;
       case "held-back":
-        return `held back: ${audit.holdReason} (${audit.sentTo === "skipped" ? "nothing sent" : "holding reply sent"} · ${cost})`;
+        return `held back: ${audit.holdReason} (${!audit.sentTo || audit.sentTo === "skipped" ? "nothing sent" : audit.afk ? note : "holding reply sent"} · ${cost})`;
       case "deferred":
-        return `left for you${audit.triageUrgent ? " (urgent)" : ""}`;
+        return `left for you${audit.triageUrgent ? " (urgent)" : ""}${audit.sentTo && audit.sentTo !== "skipped" ? `, ${note}` : ""}`;
       case "ignored":
         return "ignored";
       case "skipped-active":
@@ -149,7 +205,10 @@ async function processBurst(burst: Burst, audit: AuditRecord) {
   const text = messages.join("\n");
   const open = slackLink(teamId, burst.channel); // clicking a notification opens the DM
 
-  if (skipWhenActive && (await userIsActive())) {
+  // while AFK, Slack may still show the user as active (a laptop left open), so presence is ignored.
+  const away = afk.current();
+  audit.afk = !!away;
+  if (skipWhenActive && !away && (await userIsActive())) {
     log.debug(`${name}: skipped, you're active`);
     audit.outcome = "skipped-active";
     return;
@@ -194,12 +253,19 @@ async function processBurst(burst: Burst, audit: AuditRecord) {
     return;
   }
 
-  // requests, decisions, incidents and personal messages are for the user to answer: the agent stays quiet.
-  if (result.action !== "answer") {
+  // requests, decisions, incidents and personal messages are for the user to answer: the agent stays quiet. While
+  // AFK they go to the responder too, which gives what context it can and leaves the decision to the user.
+  if (result.action !== "answer" && !away) {
     log.debug(`${name}: left for you, no reply sent`);
     notify(`${name} needs you${result.urgent ? " (URGENT)" : ""}`, text, { loud: true, open });
     audit.outcome = "deferred";
     return;
+  }
+
+  // an urgent message gets the away note now, not after the research.
+  if (away && result.urgent) {
+    notify(`${name} needs you (URGENT)`, text, { loud: true, open });
+    await tellAway(audit, burst, away, true);
   }
 
   log.debug(`${name}: researching a reply...`);
@@ -214,11 +280,13 @@ async function processBurst(burst: Burst, audit: AuditRecord) {
       prs: result.prs,
       jiraKeys: result.jiraKeys,
       attachments,
+      away: away && { description: describeAway(away), mentioned: result.urgent },
     });
   } catch (error) {
     log.debug(`responder failed: ${(error as Error).stack ?? error}`);
     Object.assign(audit, { outcome: "responder-failed", error: (error as Error).message });
-    await send(audit, burst, holdingReply(), { holding: true });
+    if (away && !result.urgent) await tellAway(audit, burst, away);
+    else if (!away) await send(audit, burst, holdingReply(), { holding: true });
     notify(`${name} needs you (responder failed)`, text, { loud: true, open });
     return;
   }
@@ -234,13 +302,15 @@ async function processBurst(burst: Burst, audit: AuditRecord) {
   });
 
   const secret = findSecret(draft.reply);
-  const holdBack = draft.needsUser
-    ? "needs you"
-    : draft.confidence < config.confidenceThreshold
-      ? `confidence ${draft.confidence.toFixed(2)}`
-      : secret
-        ? `draft looked like it held a ${secret}`
-        : undefined;
+  // while AFK, a reply that gives context but leaves the decision to the user is still sent.
+  const holdBack =
+    draft.needsUser && !away
+      ? "needs you"
+      : draft.confidence < config.confidenceThreshold
+        ? `confidence ${draft.confidence.toFixed(2)}`
+        : secret
+          ? `draft looked like it held a ${secret}`
+          : undefined;
   if (draft.t3Problem)
     log.warnOnce(
       `t3:${draft.t3Problem}`,
@@ -257,17 +327,27 @@ async function processBurst(burst: Burst, audit: AuditRecord) {
   if (holdBack) {
     log.debug(`${name}: holding back (${holdBack})`);
     Object.assign(audit, { outcome: "held-back", holdReason: holdBack });
-    await send(audit, burst, holdingReply(), { holding: true });
+    if (away && !result.urgent) await tellAway(audit, burst, away);
+    else if (!away) await send(audit, burst, holdingReply(), { holding: true });
     notify(`${name} needs you (${holdBack})`, text, { loud: true, open });
     return;
   }
   audit.outcome = "answered";
   const sent = await send(audit, burst, draft.reply);
+  if (draft.needsUser) {
+    notify(`${name} needs you (sent what I found)`, text, { loud: true, open });
+    return;
+  }
   // grouped by the reply, so a ✅ on it can take this notification back.
   notify(sent === "teammate" ? `Replied to ${name}` : `Drafted a reply to ${name}`, draft.reply, {
     open,
     group: audit.replyTs && replyGroup(audit.replyTs),
   });
+}
+
+// while AFK, every burst the agent can't answer gets the away note.
+async function tellAway(audit: AuditRecord, burst: Burst, away: Away, urgent = false) {
+  await send(audit, burst, awayNote(away, { urgent }), { holding: true });
 }
 
 const replyGroup = (replyTs: string) => `dm-agent-reply-${replyTs}`;
@@ -280,8 +360,10 @@ async function send(audit: AuditRecord, burst: Burst, text: string, options?: { 
   return sent.to;
 }
 
-// replies in the DM the burst came from when it's a test message or sending to this teammate is on. Otherwise the
-// reply goes to the user's self-DM, naming the teammate, and holding replies are skipped.
+// replies in the DM the burst came from when it's a test message or sending to this teammate is on
+// (send_to_teammate_afk while the user is AFK). Otherwise the
+// reply goes to the user's self-DM, naming the teammate, and holding replies are skipped (away notes aren't, so AFK
+// mode can be tried out in the self-DM).
 // Answers get ✅ and ❌ reactions for the recipient to mark them; holding replies don't.
 async function reply(
   burst: Burst,
@@ -289,8 +371,9 @@ async function reply(
   text: string,
   { holding = false } = {},
 ): Promise<{ to: "teammate" | "self-dm" | "skipped"; channel?: string; ts?: string }> {
-  const direct = burst.channel === selfDm || config.sendsTo(burst.user);
-  if (!direct && (holding || !selfDm)) {
+  const away = !!afk.current();
+  const direct = burst.channel === selfDm || config.sendsTo(burst.user, away);
+  if (!direct && ((holding && !away) || !selfDm)) {
     log.debug(`${name}: not sending${holding ? " a holding reply" : ""}`);
     return { to: "skipped" };
   }
@@ -324,6 +407,7 @@ const bursts = new BurstTracker({
   quietMs: debounceSeconds * 1000,
   recentReplyMs: recentReplySeconds * 1000,
   onReady: (burst) => void handleBurst(burst).catch((error) => log.error("handling a burst failed", error)),
+  away: () => !!afk.current(),
 });
 
 socket.on("message", async ({ event, ack }) => {
@@ -339,6 +423,10 @@ socket.on("message", async ({ event, ack }) => {
 
   // the agent's own posts come from the user's account; they aren't the user replying.
   if (event.user === selfId && isAgentMessage(event)) return;
+
+  // "afk ..." and "back" in the self-DM switch AFK mode. They aren't replies, so they don't cancel anything.
+  const command = event.user === selfId && event.channel === selfDm ? parseAfkCommand(event.text ?? "") : undefined;
+  if (command) return onAfkCommand(command);
 
   if (event.user === selfId && event.channel === selfDm && TEST_PREFIX.test(event.text ?? "")) {
     const text = (event.text ?? "").replace(TEST_PREFIX, "");

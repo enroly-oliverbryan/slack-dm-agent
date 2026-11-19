@@ -98,6 +98,21 @@ One-off script, re-run weekly (or on demand).
   there. File names are recorded in the audit log.
 - Test mode: in the user's self-DM, messages starting with `T:` act as a teammate's DM, so the whole flow can be
   tried without anyone else.
+- **AFK mode** (`src/afk.ts`): the user types `afk`, `afk lunch`, `afk 1h lunch` or `afk until 2pm dentist` in
+  their self-DM; `back` (or `afk off`) ends it, and one with an end time also ends on its own. Kept in
+  `data/afk.json` across restarts. While AFK:
+  - Presence and "you replied recently" checks are skipped.
+  - Replies go where `send_to_teammate_afk` says for that person (default `false`: the self-DM, like
+    `send_to_teammate`). Away notes go to the self-DM too when redirected, so AFK mode can be tried out without
+    reaching anyone.
+  - Messages triage would leave for the user go to the responder too (only "ignore" stays silent). Urgent ones get
+    the away note straight away, before the research.
+  - Every reply opens with the away line, and when the question needs the user it still sends the
+    context it found (with a loud "needs you" notification) instead of holding back. The confidence and secret
+    checks still apply.
+  - A held-back reply becomes the away note ("<name> is away (lunch), back around 14:00. I'll make sure <name> sees
+    this."), on every burst.
+  - Ending AFK posts a summary in the self-DM of who messaged and what happened, with audit-log ids.
 
 ### 3. Triage (Haiku 5.5)
 
@@ -279,7 +294,7 @@ notification. So always notify locally:
 `send_to_teammate` on each allowlist entry (default `false`) decides where that person's replies go. When off, a
 confident answer to them is posted to the user's self-DM with "· reply to <name>" in the header, and holding
 replies are skipped; nothing reaches the teammate. Test (`T:`) messages always get their reply in the self-DM, holding
-replies included.
+replies included. `send_to_teammate_afk` is the same switch for while the user is AFK (also default `false`).
 
 `project_roots` is the single access boundary: the responder may read code under these folders, their Claude Code
 session logs (`~/.claude/projects/<encoded root>`), and T3 threads in projects whose workspace root matches. Models

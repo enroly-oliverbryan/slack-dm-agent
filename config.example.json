@@ -3,7 +3,8 @@
     {
       "id": "U0123ABCDEF",
       "name": "Teammate name",
-      "send_to_teammate": false
+      "send_to_teammate": false,
+      "send_to_teammate_afk": false
     }
   ],
   "debounce_seconds": 45,

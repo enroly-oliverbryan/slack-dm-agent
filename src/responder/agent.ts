@@ -106,6 +106,13 @@ ${examples ? `\n# How ${USER_NAME} has answered similar questions (their words, 
 
 const escape = (text: string) => text.replace(/</g, "&lt;");
 
+// while the user is AFK, a reply that only gives context is still worth sending: nobody else will answer for a while.
+const awayInstructions = (senderName: string, away: { description: string; mentioned: boolean }) => `
+${USER_NAME} is AFK: ${away.description}.
+- ${away.mentioned ? `${senderName} has just been told ${USER_NAME} is away; don't say it again.` : `Start the reply with one short line saying ${USER_NAME} is away and when ${USER_NAME} is back, if known.`}
+- If the question needs ${USER_NAME} (a decision, approval, opinion), give ${senderName} whatever context your tools confirmed that helps in the meantime, say ${USER_NAME} will pick it up when back, and set needs_user to true.
+- Rate confidence on whether what the reply says is correct, not on whether it settles the question.`;
+
 export async function respond(input: {
   senderId: string;
   senderName: string;
@@ -115,6 +122,9 @@ export async function respond(input: {
   prs: number[];
   jiraKeys: string[];
   attachments?: Attachments;
+  // set while the user is AFK: e.g. "away (lunch) until 14:00", and whether the away note already went out for
+  // this burst (urgent messages get it before the research).
+  away?: { description: string; mentioned: boolean };
 }): Promise<Draft> {
   const started = Date.now();
   const question = input.messages.join("\n");
@@ -190,7 +200,8 @@ ${input.messages.map((m) => `<message>${escape(m)}</message>`).join("\n")}
 
 ${describeAttachments(input.attachments)}
 
-Leads from triage: topics ${input.topics.join(", ") || "none"}; PRs ${input.prs.map((n) => `#${n}`).join(", ") || "none"}; Jira ${input.jiraKeys.join(", ") || "none"}.`;
+Leads from triage: topics ${input.topics.join(", ") || "none"}; PRs ${input.prs.map((n) => `#${n}`).join(", ") || "none"}; Jira ${input.jiraKeys.join(", ") || "none"}.
+${input.away ? awayInstructions(input.senderName, input.away) : ""}`;
 
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), TIME_LIMIT_MS);

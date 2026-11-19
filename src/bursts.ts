@@ -23,12 +23,14 @@ export class BurstTracker {
       // a teammate message this soon after the user's own message in the DM means the user is in the conversation.
       recentReplyMs: number;
       onReady: (burst: Burst) => void;
+      // while true (the user is AFK), an earlier message from the user doesn't mean they're in the conversation.
+      away?: () => boolean;
     },
   ) {}
 
   add(channel: string, user: string, message: Message): AddResult {
     const lastSelf = this.lastSelfTs.get(channel);
-    if (lastSelf && (seconds(message.ts) - seconds(lastSelf)) * 1000 < this.opts.recentReplyMs) {
+    if (lastSelf && !this.opts.away?.() && (seconds(message.ts) - seconds(lastSelf)) * 1000 < this.opts.recentReplyMs) {
       this.cancel(channel);
       return "user-here";
     }

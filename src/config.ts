@@ -5,7 +5,9 @@ type RawConfig = {
   // send_to_teammate: true sends replies to that person. Unset or false, their replies go to the user's self-DM
   // instead (with the teammate's name in the header) and holding replies are skipped. Test messages always get their
   // reply in the self-DM.
-  allowlist: { id: string; name: string; send_to_teammate?: boolean }[];
+  // send_to_teammate_afk: the same switch for while the user is AFK. Unset or false, AFK replies and away notes go to
+  // the self-DM too.
+  allowlist: { id: string; name: string; send_to_teammate?: boolean; send_to_teammate_afk?: boolean }[];
   // quiet time after a teammate's last message before the burst is handled.
   debounce_seconds?: number;
   // a teammate message this soon after the user's own message in the DM is left to the user.
@@ -41,7 +43,10 @@ if (badIds.length) {
 export const config = {
   allowlist: new Map(raw.allowlist.map((p) => [p.id, p.name])),
   // whether replies to this teammate go to them, or to the user's self-DM.
-  sendsTo: (userId: string) => raw.allowlist.find((p) => p.id === userId)?.send_to_teammate === true,
+  sendsTo: (userId: string, afk = false) => {
+    const entry = raw.allowlist.find((p) => p.id === userId);
+    return (afk ? entry?.send_to_teammate_afk : entry?.send_to_teammate) === true;
+  },
   debounceSeconds: raw.debounce_seconds ?? 45,
   recentReplySeconds: raw.recent_reply_seconds ?? 300,
   skipWhenActive: raw.skip_when_active ?? false,

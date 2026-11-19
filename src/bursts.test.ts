@@ -69,6 +69,19 @@ describe("BurstTracker", () => {
     assert.equal(ready.length, 0);
   });
 
+  it("doesn't treat the user's earlier message as being here while they're AFK", () => {
+    const away = new BurstTracker({
+      quietMs: QUIET,
+      recentReplyMs: RECENT,
+      onReady: (b) => ready.push(b),
+      away: () => true,
+    });
+    away.selfPosted("D1", "1000.000100");
+    assert.equal(away.add("D1", "U1", { ts: "1100.000100", text: "you there?" }), "pending");
+    mock.timers.tick(QUIET);
+    assert.equal(ready.length, 1);
+  });
+
   it("handles messages once the user has been quiet long enough", () => {
     tracker.selfPosted("D1", "1000.000100");
     assert.equal(tracker.add("D1", "U1", { ts: "1300.000100", text: "you there?" }), "pending");
