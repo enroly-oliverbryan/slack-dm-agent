@@ -9,15 +9,11 @@ oauth_config:
       - users:read # resolve sender names
       - chat:write # send agent replies from your account
       - search:read # later: recon of sent messages
-      - reactions:read # ✅ / ❌ feedback on agent answers
-      - reactions:write # add ✅ / ❌ to agent answers
       - files:read # screenshots, logs and files attached to DMs
 settings:
   event_subscriptions:
     user_events:
       - message.im
-      - reaction_added
-      - reaction_removed
   interactivity:
     is_enabled: false
   org_deploy_enabled: false

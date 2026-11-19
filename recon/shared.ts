@@ -11,8 +11,6 @@ const root = (path: string) => fileURLToPath(new URL(`../${path}`, import.meta.u
 export const RAW_DIR = root("data/recon");
 export const SENT_FILE = root("data/recon/sent.jsonl");
 export const PAIRS_FILE = root("data/recon/dm-pairs.jsonl");
-// answers teammates marked ❌, with what the user said afterwards (from the audit log + Slack)
-export const CORRECTIONS_FILE = root("data/recon/corrections.jsonl");
 
 // generated tone profile
 export const PROFILE_DIR = root("profile");
@@ -39,17 +37,6 @@ export type SentMessage = {
 };
 
 // one exchange in a DM
-// an agent answer a teammate marked ❌, and the user's own follow-up in that DM, if any.
-export type Correction = {
-  id: string;
-  withUserId: string;
-  withName: string;
-  ts: string;
-  question: string;
-  agentAnswer: string;
-  reply?: string;
-};
-
 export type DmPair = {
   id: string;
   withUserId: string;

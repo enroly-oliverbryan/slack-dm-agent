@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { burstById, burstByReply, markedBad, recentBursts, recordBurst, setFeedback, useDatabase } from "./audit.ts";
+import { burstById, recentBursts, recordBurst, useDatabase } from "./audit.ts";
 
 describe("audit log", () => {
   useDatabase(":memory:");
@@ -47,34 +47,5 @@ describe("audit log", () => {
       costUsd: 0,
     });
     assert.equal(recentBursts(1)[0].senderName, "Ben");
-  });
-
-  it("finds a burst by its reply and records feedback", () => {
-    const id = recordBurst({
-      at: "t",
-      channel: "D3",
-      senderId: "U3",
-      senderName: "Cat",
-      test: false,
-      messages: ["q"],
-      replyChannel: "D3",
-      replyTs: "1700000000.000100",
-      costUsd: 0,
-    });
-    assert.equal(burstByReply("D3", "1700000000.000100")?.id, id);
-    assert.equal(burstByReply("D3", "1700000000.000999"), undefined);
-    setFeedback(id!, "bad");
-    assert.equal(burstById(id!)?.feedback, "bad");
-  });
-
-  it("lists ❌-marked answers from real teammates, not tests", () => {
-    const base = { at: "t", senderId: "U4", senderName: "Dee", messages: ["q"], costUsd: 0 };
-    const real = recordBurst({ ...base, channel: "D4", test: false });
-    const test = recordBurst({ ...base, channel: "D5", test: true });
-    setFeedback(real!, "bad");
-    setFeedback(test!, "bad");
-    const ids = markedBad().map((r) => r.id);
-    assert.ok(ids.includes(real!));
-    assert.ok(!ids.includes(test!));
   });
 });

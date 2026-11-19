@@ -1,4 +1,4 @@
-// terminal output. By default: one line per handled burst, feedback, and problems. VERBOSE=1 adds everything else
+// terminal output. By default: one line per handled burst, and problems. VERBOSE=1 adds everything else
 // (incoming messages, triage reasoning, drafts). The full record of each burst is in the audit log either way.
 
 export const VERBOSE = /^(1|true|yes)$/i.test(process.env.VERBOSE ?? "");

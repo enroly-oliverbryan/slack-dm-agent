@@ -45,7 +45,7 @@ It is a first responder for teammates (mostly "how does X in your PR work?"). It
             │   guard      │  confidence gate, needs-user flag, secret scan
             └──────┬───────┘
                    ▼
-   reply (as agent, ✅/❌ reactions) ──▶ macOS notification ──▶ audit log
+   reply (as agent) ──▶ macOS notification ──▶ audit log
    to the teammate, or to the user's self-DM unless send_to_teammate is on for them
 ```
 
@@ -77,9 +77,9 @@ One-off script, re-run weekly (or on demand).
 
 - Slack app with a **user token** (`xoxp`). Replies post from the user's account, so the message text itself must
   say it's the agent (see Identity).
-  - User scopes: `im:history`, `im:read`, `chat:write`, `users:read`, `search:read` (recon), `reactions:read` and
-    `reactions:write` (recipient feedback), `files:read` (attachments).
-  - Event subscriptions (user events): `message.im`, `reaction_added`, `reaction_removed`.
+  - User scopes: `im:history`, `im:read`, `chat:write`, `users:read`, `search:read` (recon), `files:read`
+    (attachments).
+  - Event subscriptions (user events): `message.im`.
   - Socket Mode with an app-level token, so no public URL is needed.
 - Filters, in order:
   1. Channel is a 1:1 DM, sender is in `config.allowlist`.
@@ -210,8 +210,6 @@ Deterministic checks before anything is sent:
   own posts). Its text is "From <name>'s agent" or `CUSTOM_HEADER`, which can reword it but not remove it.
   Teammates must always be able to tell the agent from the user, so nobody acts on a wrong answer thinking the user
   said it. Planned: the first agent reply to each person also says what it is ("Hi! I'm <name>'s agent - ...").
-- **Recipient feedback**: answers get ✅ and ❌ reactions and a line asking the recipient to mark them (see Other
-  things worth building).
 - Include sources when useful (PR link, Jira key) - also makes wrong answers easy to spot.
 
 ### 7. macOS notification
@@ -221,25 +219,15 @@ notification. So always notify locally:
 
 - `terminal-notifier` (`src/notify.ts`; falls back to `osascript` when it isn't installed).
 - Titles: "Replied to <name>" / "Drafted a reply to <name>" with the reply, or "<name> needs you (<reason>)" with
-  their message. "Needs you", urgent and ❌ notifications play a sound.
+  their message. "Needs you", and urgent notifications play a sound.
 - Click opens the DM: `slack://channel?team=<team_id>&id=<channel_id>`.
-- "Replied to" notifications are grouped by the reply, so a ✅ on it removes the notification.
 
 ## Other things worth building
 
 - **Kill switch**: `config.enabled`, a menu-bar toggle or a `/agent off` message to self. Also auto-pause outside
   working hours or when the user's Slack status is set to holiday (configurable either way - holiday is arguably
   when it's most useful, but also when wrong answers sit uncorrected longest).
-- **Recipient feedback** (built): the agent adds ✅ and ❌ to each answer, with a line asking the recipient to mark
-  it. ✅ removes the "Replied to" notification; ❌ sends the user a loud "<name> still needs you" notification. Votes
-  are stored in the audit log (`feedback`). In the self-DM the reactions are the user's own, so clicking one removes
-  it, and that removal is the vote. Needs `reactions:read`/`reactions:write` and the `reaction_added`/
-  `reaction_removed` user events.
-- **Feedback into recon** (built): `recon:collect` reads answers real teammates marked ❌ from the audit log, plus
-  what the user said to them in that DM within 24h, into `data/recon/corrections.jsonl`. `recon:build` gives these
-  to Opus, which adds a "Lessons from answers marked ❌" section to `style.md`, and adds each correction with a
-  follow-up to `examples.jsonl` as a question -> the user's own answer. Recon also leaves out the agent's own posts
-  and the self-DM, so the tone profile only learns from the user.
+- Recon leaves out the agent's own posts and the self-DM, so the tone profile only learns from the user.
 - **Audit log** (built, `src/audit.ts`): one row per burst in `data/agent.db` (`bursts` table) with the messages,
   triage result, draft, confidence, reasoning, sources, tool calls, hold-back reason, what was sent where, errors,
   cost and duration. `pnpm audit-log` lists recent bursts; `pnpm audit-log <id>` shows one in full.
@@ -259,7 +247,7 @@ notification. So always notify locally:
    files are denied, the guard scans outgoing text, and the prompt forbids large pastes. Keep off-limits projects out
    of `project_roots`.
 3. **Wrong answers in the user's name.** The main reputational risk. Mitigated by confidence gate, sources in
-   replies, agent marker, the allowlist, recipient ✅/❌ feedback, and `send_to_teammate` (off by default, so
+   replies, agent marker, the allowlist, and `send_to_teammate` (off by default, so
    answers land in the user's self-DM until they turn it on per person). Planned: cooldowns.
 4. **Prompt injection from teammates** (deliberate or pasted content). Read-only tools + guard limit the
    blast radius to "says something it shouldn't".
@@ -327,8 +315,11 @@ Claude calls use the Claude Code login through the Agent SDK, so no `ANTHROPIC_A
 
 ```
 src/
-  index.ts            # watcher: Socket Mode, filters, test mode, burst handling, replies, reactions
+  index.ts            # watcher: Socket Mode, filters, test mode, burst handling, replies, AFK
   bursts.ts           # debounce and user-is-here check
+  afk.ts              # AFK commands, state (data/afk.json) and away note
+  files.ts            # attachments: download, images, text files
+  log.ts              # terminal output, VERBOSE=1
   config.ts           # config.json loading and defaults
   env.ts              # USER_NAME, PRONOUNS, CUSTOM_HEADER
   triage.ts           # Haiku 5.5 classification
@@ -337,7 +328,7 @@ src/
   responder/policy.ts # what the responder may read
   responder/github.ts # read-only gh tool
   guard.ts            # secret scan
-  messages.ts         # agent message layout, marker, feedback reactions
+  messages.ts         # agent message layout, marker
   notify.ts           # macOS notifications
   audit.ts            # sqlite audit log (data/agent.db)
   profile.ts          # tone profile loading, similar examples, holding replies
@@ -360,6 +351,6 @@ config.example.json
 3. **Watcher + notify** (done): allowlist, debounce, user-is-here check, dedupe, test mode, notifications.
 4. **Triage + responder** (done): confident answers are sent, otherwise a holding reply; `send_to_teammate` routes
    answers to the self-DM until it's switched on.
-5. **Guard + feedback loop**: secret scan, confidence gate, audit log and recipient ✅/❌ feedback (done); length cap,
+5. **Guard**: secret scan, confidence gate and audit log (done); length cap,
    cooldown, first-reply intro, `launchd`, startup catch-up (planned).
 6. **Nice-to-haves**: digest, follow-up tracker, menu-bar toggle.

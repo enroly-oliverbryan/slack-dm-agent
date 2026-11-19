@@ -1,4 +1,4 @@
-// pulls sent Slack messages, 1:1 DM exchanges and corrections (answers teammates marked ❌) into data/recon/.
+// pulls sent Slack messages and 1:1 DM exchanges into data/recon/.
 // The agent's own posts come from the user's account, so they're left out: they aren't the user's voice.
 // run: pnpm recon:collect
 
@@ -6,22 +6,11 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { WebClient } from "@slack/web-api";
 import { required } from "../src/env.ts";
 import { looksLikeAgentMessage } from "../src/messages.ts";
-import { markedBad } from "../src/audit.ts";
-import {
-  CORRECTIONS_FILE,
-  PAIRS_FILE,
-  RAW_DIR,
-  SENT_FILE,
-  toJsonl,
-  type Correction,
-  type DmPair,
-  type SentMessage,
-} from "./shared.ts";
+import { PAIRS_FILE, RAW_DIR, SENT_FILE, toJsonl, type DmPair, type SentMessage } from "./shared.ts";
 
 const MAX_SEARCH_PAGES = 100; // Slack's search pagination limit
 const TURN_GAP_SECONDS = 10 * 60; // same-speaker messages closer than this form one turn
 const MAX_REPLY_DELAY_SECONDS = 6 * 60 * 60; // a reply later than this isn't treated as an answer
-const FOLLOW_UP_WINDOW_SECONDS = 24 * 60 * 60; // how long after a ❌ answer to look for the user's own reply
 
 const web = new WebClient(required("SLACK_USER_TOKEN"));
 const { user_id: selfId } = await web.auth.test();
@@ -168,45 +157,6 @@ async function collectPairs(): Promise<DmPair[]> {
   return pairs;
 }
 
-// --- 3. answers teammates marked ❌, and what the user said to them afterwards ---
-async function collectCorrections(): Promise<Correction[]> {
-  const corrections: Correction[] = [];
-  for (const burst of markedBad()) {
-    const handled = Date.parse(burst.at) / 1000;
-    let reply: string | undefined;
-    try {
-      const { messages = [] } = await web.conversations.history({
-        channel: burst.channel,
-        oldest: String(handled - 60),
-        latest: String(handled + FOLLOW_UP_WINDOW_SECONDS),
-        limit: 100,
-      });
-      // the user's first turn after the burst: consecutive messages close together.
-      const own = messages
-        .filter((m) => m.user === selfId && m.text && !m.subtype && !looksLikeAgentMessage(m))
-        .sort((a, b) => Number(a.ts) - Number(b.ts));
-      const turn: string[] = [];
-      for (const [i, m] of own.entries()) {
-        if (i > 0 && Number(m.ts) - Number(own[i - 1]!.ts) > TURN_GAP_SECONDS) break;
-        turn.push(await cleanText(m.text!));
-      }
-      reply = turn.join("\n") || undefined;
-    } catch (error) {
-      console.warn(`couldn't read the follow-up for #${burst.id}:`, (error as Error).message);
-    }
-    corrections.push({
-      id: `${burst.channel}:${burst.replyTs ?? burst.id}`,
-      withUserId: burst.senderId,
-      withName: burst.senderName,
-      ts: burst.replyTs ?? String(handled),
-      question: await cleanText(burst.messages.join("\n")),
-      agentAnswer: burst.sentText ?? burst.draft ?? "",
-      reply,
-    });
-  }
-  return corrections;
-}
-
 mkdirSync(RAW_DIR, { recursive: true });
 
 const sent = await collectSent();
@@ -216,9 +166,3 @@ console.log(`wrote ${sent.length} sent messages to ${SENT_FILE}`);
 const pairs = await collectPairs();
 writeFileSync(PAIRS_FILE, toJsonl(pairs));
 console.log(`wrote ${pairs.length} DM pairs to ${PAIRS_FILE}`);
-
-const corrections = await collectCorrections();
-writeFileSync(CORRECTIONS_FILE, toJsonl(corrections));
-console.log(
-  `wrote ${corrections.length} corrections (${corrections.filter((c) => c.reply).length} with a follow-up) to ${CORRECTIONS_FILE}`,
-);

@@ -6,10 +6,10 @@ import { BurstTracker, type Burst } from "./bursts.ts";
 import { triage, type Line } from "./triage.ts";
 import { respond, type Draft } from "./responder/agent.ts";
 import { holdingReply } from "./profile.ts";
-import { agentReply, BAD, feedbackFor, GOOD, isAgentMessage } from "./messages.ts";
+import { agentReply, isAgentMessage } from "./messages.ts";
 import { findSecret } from "./guard.ts";
-import { burstByReply, burstsSince, recordBurst, setFeedback, type AuditRecord, type AuditRow } from "./audit.ts";
-import { notify, removeNotification, slackLink } from "./notify.ts";
+import { burstsSince, recordBurst, type AuditRecord, type AuditRow } from "./audit.ts";
+import { notify, slackLink } from "./notify.ts";
 import { fileName, readAttachments, type SlackFile } from "./files.ts";
 import { log, short, VERBOSE } from "./log.ts";
 import { AfkMode, awayNote, describeAway, parseAfkCommand, type AfkCommand, type Away } from "./afk.ts";
@@ -338,19 +338,13 @@ async function processBurst(burst: Burst, audit: AuditRecord) {
     notify(`${name} needs you (sent what I found)`, text, { loud: true, open });
     return;
   }
-  // grouped by the reply, so a ✅ on it can take this notification back.
-  notify(sent === "teammate" ? `Replied to ${name}` : `Drafted a reply to ${name}`, draft.reply, {
-    open,
-    group: audit.replyTs && replyGroup(audit.replyTs),
-  });
+  notify(sent === "teammate" ? `Replied to ${name}` : `Drafted a reply to ${name}`, draft.reply, { open });
 }
 
 // while AFK, every burst the agent can't answer gets the away note.
 async function tellAway(audit: AuditRecord, burst: Burst, away: Away, urgent = false) {
   await send(audit, burst, awayNote(away, { urgent }), { holding: true });
 }
-
-const replyGroup = (replyTs: string) => `dm-agent-reply-${replyTs}`;
 
 // reply() plus the audit record of what went where.
 async function send(audit: AuditRecord, burst: Burst, text: string, options?: { holding?: boolean }) {
@@ -364,7 +358,6 @@ async function send(audit: AuditRecord, burst: Burst, text: string, options?: { 
 // (send_to_teammate_afk while the user is AFK). Otherwise the
 // reply goes to the user's self-DM, naming the teammate, and holding replies are skipped (away notes aren't, so AFK
 // mode can be tried out in the self-DM).
-// Answers get ✅ and ❌ reactions for the recipient to mark them; holding replies don't.
 async function reply(
   burst: Burst,
   name: string,
@@ -379,22 +372,9 @@ async function reply(
   }
   const channel = direct ? burst.channel : selfDm!;
   try {
-    const message = agentReply(text, { forName: direct ? undefined : name, askFeedback: !holding });
+    const message = agentReply(text, { forName: direct ? undefined : name });
     const { ts } = await web.chat.postMessage({ channel, ...message, unfurl_links: false });
     log.debug(`${name}: sent to ${direct ? name : "your self-DM"}`);
-    if (!holding && ts) {
-      for (const reaction of [GOOD, BAD]) {
-        try {
-          await web.reactions.add({ channel, timestamp: ts, name: reaction });
-        } catch (error) {
-          log.warnOnce(
-            `reaction:${(error as Error).message}`,
-            `couldn't add ✅/❌ to replies (reactions:write scope?)`,
-            error,
-          );
-        }
-      }
-    }
     return { to: direct ? "teammate" : "self-dm", channel, ts };
   } catch (error) {
     log.error(`couldn't send the reply to ${name}`, error);
@@ -450,50 +430,6 @@ socket.on("message", async ({ event, ack }) => {
   log.debug(
     `${name}: ${short(event.text ?? "")}${result === "user-here" ? " (you replied recently, leaving it)" : ""}`,
   );
-});
-
-// ✅ / ❌ on an agent answer. A vote is a reaction added by anyone but the user: the recipient marking the answer. In
-// the self-DM the recipient is the user, whose reactions are already there (the agent added them as the user), so
-// clicking one removes it: that removal is the vote.
-type ReactionEvent = {
-  user: string;
-  reaction: string;
-  item: { type: string; channel: string; ts: string };
-  event_ts: string;
-};
-
-function onReaction(event: ReactionEvent, removed: boolean) {
-  if (event.item.type !== "message") return;
-  const feedback = feedbackFor(event.reaction);
-  if (!feedback) return;
-  const isVote = removed ? event.user === selfId && event.item.channel === selfDm : event.user !== selfId;
-  if (!isVote) return;
-
-  const key = `reaction:${event.event_ts}:${event.user}:${event.reaction}`;
-  if (seen.has(key)) return;
-  seen.add(key);
-
-  const burst = burstByReply(event.item.channel, event.item.ts);
-  if (!burst) return;
-  setFeedback(burst.id, feedback);
-  const voter = event.user === selfId ? "you" : (allowlist.get(event.user) ?? "someone");
-  log.info(`#${burst.id} ${feedback === "good" ? "✅" : "❌"} from ${voter} (${burst.senderName})`);
-
-  if (feedback === "good") removeNotification(replyGroup(event.item.ts));
-  else
-    notify(`${burst.senderName} still needs you`, burst.messages.join("\n"), {
-      loud: true,
-      open: slackLink(teamId, burst.channel),
-    });
-}
-
-socket.on("reaction_added", async ({ event, ack }) => {
-  await ack();
-  onReaction(event, false);
-});
-socket.on("reaction_removed", async ({ event, ack }) => {
-  await ack();
-  onReaction(event, true);
 });
 
 socket.on("connected", () => log.debug("socket connected"));
